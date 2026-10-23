@@ -75,9 +75,8 @@ export default function App() {
   }, [env]);
 
   return (
-    // The design mockups are a light theme; pinning appearance keeps the
-    // app identical (and readable) on phones set to Telegram dark mode.
-    <AppRoot appearance="light">
+    // No pinned appearance: colors follow the user's Telegram theme.
+    <AppRoot>
       {env.kind === 'mock' && (
         <div
           style={{

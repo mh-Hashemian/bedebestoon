@@ -227,7 +227,7 @@ export function Dashboard({ onAddExpense }: { onAddExpense: () => void }) {
               width: 50,
               height: 50,
               borderRadius: '50%',
-              background: 'rgba(255,255,255,0.7)',
+              background: 'var(--tgui--bg_color, #fff)',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
