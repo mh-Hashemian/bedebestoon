@@ -64,3 +64,11 @@ button,
 textarea {
   font-family: inherit;
 }
+
+/* Inputs follow the app's RTL direction; telegram-ui leaves some of them
+   LTR, which also misplaces the caret and placeholder for Persian text. */
+#root input,
+#root textarea {
+  direction: rtl;
+  text-align: right;
+}

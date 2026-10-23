@@ -115,7 +115,7 @@ function TransactionCard({
         <div style={{ fontSize: 12, opacity: 0.55, marginTop: 4 }}>
           {formatDateTimeFa(expense.createdAt)}
         </div>
-        <div style={{ fontSize: 14, opacity: 0.35, marginTop: 2 }}>‹</div>
+        <div style={{ fontSize: 14, opacity: 0.35, marginTop: 2 }}>›</div>
       </div>
     </div>
   );
@@ -285,7 +285,7 @@ export function Dashboard({ onAddExpense }: { onAddExpense: () => void }) {
           onClick={onAddExpense}
           style={{ flex: 1.35 }}
         >
-          + ثبت خرج گروهی جدید
+          + ثبت خرج گروهی
         </Button>
         <Button
           size="l"

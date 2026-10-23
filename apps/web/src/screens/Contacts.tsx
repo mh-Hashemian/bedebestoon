@@ -9,7 +9,7 @@ import {
 } from '@telegram-apps/telegram-ui';
 import { friendlyError } from '../api/client';
 import { formatNumberFa } from '../lib/format';
-import { ErrorNote, InitialAvatar, LinkedBadge } from '../components/ui';
+import { ErrorNote, DeleteButton, InitialAvatar, LinkedBadge } from '../components/ui';
 import { PhonePrompt } from '../components/PhonePrompt';
 import { hapticError, hapticSuccess } from '../telegram/actions';
 import { useAppState } from '../state/AppState';
@@ -20,6 +20,7 @@ export function ContactsScreen() {
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const create = async () => {
@@ -84,7 +85,23 @@ export function ContactsScreen() {
           <Cell
             key={contact.id}
             before={<InitialAvatar name={contact.name} size={40} />}
-            after={contact.linkedUserId ? <LinkedBadge /> : undefined}
+            after={
+              <span
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+              >
+                {contact.linkedUserId ? <LinkedBadge /> : null}
+                <DeleteButton
+                  variant="inline"
+                  label="🗑"
+                  onDelete={async () => {
+                    setListError(null);
+                    await api.deleteContact(contact.id);
+                    void refresh().catch(() => {});
+                  }}
+                  onError={setListError}
+                />
+              </span>
+            }
             subtitle={
               contact.phone
                 ? 'شماره دارد — با ورودش خودکار وصل می‌شود'
@@ -94,6 +111,11 @@ export function ContactsScreen() {
             {contact.name}
           </Cell>
         ))}
+        {listError && (
+          <div style={{ padding: '0 20px 12px' }}>
+            <ErrorNote>{listError}</ErrorNote>
+          </div>
+        )}
       </Section>
 
       <Section header="افزودن مخاطب">

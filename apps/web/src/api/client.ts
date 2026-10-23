@@ -32,6 +32,8 @@ export function friendlyError(err: unknown): string {
       return 'جمع سهم‌ها باید دقیقاً برابر مبلغ کل باشد.';
     if (m.includes('do not exist in your contact list'))
       return 'یکی از مخاطب‌های انتخاب‌شده در لیستت نیست.';
+    if (m.includes('used in expenses'))
+      return 'این مخاطب در خرج‌ها استفاده شده و قابل حذف نیست.';
     if (err.status === 401)
       return 'نشست تلگرام معتبر نیست. اپ را داخل تلگرام باز کن و دوباره تلاش کن.';
     if (err.status === 403)
@@ -47,9 +49,11 @@ export interface ApiClient {
   listContacts(): Promise<Contact[]>;
   listRecentContacts(): Promise<Contact[]>;
   createContact(input: CreateContactInput): Promise<Contact>;
+  deleteContact(id: string): Promise<void>;
   sharePhone(phone: string): Promise<PhoneLinkResult>;
   listExpenses(): Promise<Expense[]>;
   createExpense(input: CreateExpenseInput): Promise<Expense>;
+  deleteExpense(id: string): Promise<void>;
   getBalances(): Promise<Balance[]>;
   settleShare(shareId: string): Promise<void>;
 }
@@ -137,5 +141,11 @@ export class HttpApiClient implements ApiClient {
     await this.request<unknown>(`/shares/${shareId}/settle`, {
       method: 'POST',
     });
+  }
+  async deleteExpense(id: string) {
+    await this.request<unknown>(`/expenses/${id}`, { method: 'DELETE' });
+  }
+  async deleteContact(id: string) {
+    await this.request<unknown>(`/contacts/${id}`, { method: 'DELETE' });
   }
 }

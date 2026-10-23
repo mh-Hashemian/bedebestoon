@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  Param,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -31,5 +34,11 @@ export class ContactsController {
   @Get('recent')
   recent(@CurrentUser() user: User) {
     return this.contacts.listRecentContacts(user.id);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  remove(@CurrentUser() user: User, @Param('id') id: string) {
+    return this.contacts.removeContact(user.id, id);
   }
 }

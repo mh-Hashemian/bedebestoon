@@ -296,7 +296,7 @@ export function AddExpense({
       <span style={{ fontWeight: 800, fontSize: 16, flex: 1 }}>
         {view === 'custom'
           ? 'تنظیم سهم افراد (Custom Split)'
-          : 'ثبت خرج گروهی جدید'}
+          : 'ثبت خرج گروهی'}
       </span>
       <button
         type="button"

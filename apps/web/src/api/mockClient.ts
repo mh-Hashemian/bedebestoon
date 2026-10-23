@@ -334,4 +334,27 @@ export class MockApiClient implements ApiClient {
     }
     throw new ApiError(404, 'Share not found');
   }
+
+  async deleteExpense(id: string): Promise<void> {
+    const idx = this.expenses.findIndex((e) => e.id === id);
+    if (idx === -1) throw new ApiError(404, 'Expense not found');
+    this.expenses.splice(idx, 1);
+  }
+
+  async deleteContact(id: string): Promise<void> {
+    const used = this.expenses.some(
+      (e) =>
+        e.payerContactId === id ||
+        e.shares.some((s) => s.contactId === id),
+    );
+    if (used) {
+      throw new ApiError(
+        400,
+        'This contact is used in expenses and cannot be deleted',
+      );
+    }
+    const idx = this.contacts.findIndex((c) => c.id === id);
+    if (idx === -1) throw new ApiError(404, 'Contact not found');
+    this.contacts.splice(idx, 1);
+  }
 }

@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  Param,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -24,5 +27,11 @@ export class ExpensesController {
   @Get()
   list(@CurrentUser() user: User) {
     return this.expenses.listExpenses(user.id);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  remove(@CurrentUser() user: User, @Param('id') id: string) {
+    return this.expenses.removeExpense(user.id, id);
   }
 }

@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Contact, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateExpenseDto, ParticipantDto } from './dto/create-expense.dto';
@@ -143,6 +148,25 @@ export class ExpensesService {
         },
       });
     });
+  }
+
+  /**
+   * Delete an expense the user created (e.g. added by mistake). Shares are
+   * removed by the schema's onDelete: Cascade, and balances are computed
+   * from shares, so they correct themselves.
+   */
+  async removeExpense(userId: string, expenseId: string) {
+    const expense = await this.prisma.expense.findUnique({
+      where: { id: expenseId },
+      select: { id: true, createdById: true },
+    });
+    if (!expense) throw new NotFoundException('Expense not found');
+    if (expense.createdById !== userId) {
+      throw new ForbiddenException(
+        'Only the creator can delete this expense',
+      );
+    }
+    await this.prisma.expense.delete({ where: { id: expenseId } });
   }
 
   /** Newest-first list of expenses the user is involved in, with shares. */

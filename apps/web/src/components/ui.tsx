@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Cell, Text } from '@telegram-apps/telegram-ui';
 import { friendlyError } from '../api/client';
 import type { Expense, Share } from '../api/types';
@@ -188,5 +188,99 @@ export function ShareRow({
     >
       {name}
     </Cell>
+  );
+}
+
+/**
+ * Two-step destructive action: the first tap arms it, a second tap within
+ * a few seconds actually deletes. Works identically in Telegram and in a
+ * plain browser — no dependency on Telegram's native popups.
+ */
+export function DeleteButton({
+  label,
+  confirmLabel = 'برای حذف، دوباره بزن',
+  onDelete,
+  onError,
+  variant = 'block',
+}: {
+  label: string;
+  confirmLabel?: string;
+  onDelete: () => Promise<void>;
+  onError?: (message: string) => void;
+  variant?: 'block' | 'inline';
+}) {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  const arm = () => {
+    setArmed(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setArmed(false), 4000);
+  };
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      await onDelete();
+      hapticSuccess();
+    } catch (err) {
+      hapticError();
+      setArmed(false);
+      onError?.(friendlyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (armed) void run();
+    else arm();
+  };
+
+  if (variant === 'inline') {
+    return (
+      <button
+        type="button"
+        disabled={busy}
+        onClick={handleClick}
+        style={{
+          border: 'none',
+          cursor: 'pointer',
+          borderRadius: 999,
+          padding: '4px 10px',
+          fontSize: 13,
+          fontWeight: 700,
+          background: armed ? RED : 'rgba(229, 72, 77, 0.10)',
+          color: armed ? '#fff' : RED,
+        }}
+      >
+        {busy ? '…' : armed ? 'حذف؟' : label}
+      </button>
+    );
+  }
+
+  return (
+    <Button
+      size="l"
+      stretched
+      loading={busy}
+      onClick={handleClick}
+      style={
+        armed
+          ? { background: RED, color: '#fff' }
+          : { background: 'rgba(229, 72, 77, 0.10)', color: RED }
+      }
+    >
+      {armed ? confirmLabel : label}
+    </Button>
   );
 }

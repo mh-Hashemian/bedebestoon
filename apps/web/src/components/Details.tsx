@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { List, Modal, Section, Text } from '@telegram-apps/telegram-ui';
 import type { Balance, Expense } from '../api/types';
 import { formatDateFa, formatSignedToman, formatToman } from '../lib/format';
@@ -8,7 +9,7 @@ import {
   sharePartyKey,
   userPartyKey,
 } from '../lib/parties';
-import { ShareRow } from './ui';
+import { DeleteButton, ShareRow } from './ui';
 import { useAppState } from '../state/AppState';
 
 /** Full expense view: summary + every share (with settle where allowed). */
@@ -19,12 +20,17 @@ export function ExpenseDetailModal({
   expense: Expense | null;
   onClose: () => void;
 }) {
-  const { me } = useAppState();
+  const { me, api, refresh } = useAppState();
+  const [delError, setDelError] = useState<string | null>(null);
+  const close = () => {
+    setDelError(null);
+    onClose();
+  };
   return (
     <Modal
       open={!!expense}
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open) close();
       }}
       header={<Modal.Header>جزئیات هزینه</Modal.Header>}
     >
@@ -49,6 +55,32 @@ export function ExpenseDetailModal({
               ))}
             </Section>
           </List>
+          {expense.createdById === me.id && (
+            <div style={{ padding: '6px 16px 0' }}>
+              <DeleteButton
+                key={expense.id}
+                label="🗑 حذف این خرج"
+                onDelete={async () => {
+                  await api.deleteExpense(expense.id);
+                  close();
+                  void refresh().catch(() => {});
+                }}
+                onError={setDelError}
+              />
+              {delError && (
+                <div
+                  style={{
+                    color: RED,
+                    fontSize: 13,
+                    marginTop: 8,
+                    textAlign: 'center',
+                  }}
+                >
+                  {delError}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </Modal>

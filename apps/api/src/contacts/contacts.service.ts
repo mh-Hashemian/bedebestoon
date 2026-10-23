@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -97,5 +98,28 @@ export class ContactsService {
       if (contact) recent.push({ ...contact, usageCount: counts.get(id) ?? 0 });
     }
     return recent;
+  }
+
+  /**
+   * Delete one of the owner's contacts (e.g. added by mistake). A contact
+   * that already takes part in expenses — as a share holder or as the
+   * payer — cannot be removed: deleting it would rewrite balances.
+   */
+  async removeContact(ownerId: string, contactId: string) {
+    const contact = await this.prisma.contact.findFirst({
+      where: { id: contactId, ownerId },
+      select: { id: true },
+    });
+    if (!contact) throw new NotFoundException('Contact not found');
+    const [shareCount, paidCount] = await Promise.all([
+      this.prisma.expenseShare.count({ where: { contactId } }),
+      this.prisma.expense.count({ where: { payerContactId: contactId } }),
+    ]);
+    if (shareCount > 0 || paidCount > 0) {
+      throw new BadRequestException(
+        'This contact is used in expenses and cannot be deleted',
+      );
+    }
+    await this.prisma.contact.delete({ where: { id: contactId } });
   }
 }

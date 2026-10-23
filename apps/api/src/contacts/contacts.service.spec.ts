@@ -75,3 +75,76 @@ describe('ContactsService.listRecentContacts', () => {
     expect(prismaMock.contact.findMany).not.toHaveBeenCalled();
   });
 });
+
+describe('ContactsService.removeContact', () => {
+  function makeService(opts: {
+    found: boolean;
+    shareCount: number;
+    paidCount: number;
+  }) {
+    const prismaMock = {
+      contact: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(opts.found ? { id: 'c1' } : null),
+        delete: jest.fn().mockResolvedValue({ id: 'c1' }),
+      },
+      expenseShare: {
+        count: jest.fn().mockResolvedValue(opts.shareCount),
+      },
+      expense: {
+        count: jest.fn().mockResolvedValue(opts.paidCount),
+      },
+    };
+    const service = new ContactsService(prismaMock as never);
+    return { service, prismaMock };
+  }
+
+  it('deletes an unused contact owned by the user', async () => {
+    const { service, prismaMock } = makeService({
+      found: true,
+      shareCount: 0,
+      paidCount: 0,
+    });
+    await service.removeContact('owner-1', 'c1');
+    expect(prismaMock.contact.delete).toHaveBeenCalledWith({
+      where: { id: 'c1' },
+    });
+  });
+
+  it('throws 404 when the contact does not exist for this owner', async () => {
+    const { service, prismaMock } = makeService({
+      found: false,
+      shareCount: 0,
+      paidCount: 0,
+    });
+    await expect(service.removeContact('owner-1', 'nope')).rejects.toThrow(
+      'Contact not found',
+    );
+    expect(prismaMock.contact.delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete a contact that holds shares', async () => {
+    const { service, prismaMock } = makeService({
+      found: true,
+      shareCount: 2,
+      paidCount: 0,
+    });
+    await expect(service.removeContact('owner-1', 'c1')).rejects.toThrow(
+      'used in expenses',
+    );
+    expect(prismaMock.contact.delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete a contact that paid for an expense', async () => {
+    const { service, prismaMock } = makeService({
+      found: true,
+      shareCount: 0,
+      paidCount: 1,
+    });
+    await expect(service.removeContact('owner-1', 'c1')).rejects.toThrow(
+      'used in expenses',
+    );
+    expect(prismaMock.contact.delete).not.toHaveBeenCalled();
+  });
+});
