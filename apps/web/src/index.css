@@ -1,0 +1,14 @@
+/* Design language (see design/mockup-*.png — the Phase 2 design reference):
+   soft white cards with ~20px radii and gentle shadows on a light
+   gray-blue backdrop; primary blue comes from Telegram's button color,
+   green marks positive/valid states, red marks money owed. telegram-ui
+   theme variables keep everything correct in Telegram's dark mode too. */
+
+html,
+body {
+  background: var(--tgui--secondary_bg_color, #eef3f9);
+}
+
+input {
+  font-family: inherit;
+}

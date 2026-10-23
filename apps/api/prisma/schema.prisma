@@ -1,0 +1,93 @@
+// Telegram Debt & Expense Settlement Mini App — data model.
+// Source: HANDOVER.md (v1.0) + binding Addendum v1.1:
+//  1. Virtual-contact matching by PHONE: User.phone (unique), Contact.phone.
+//  2. Payer can be a virtual contact: Expense.payerContactId (exactly one of
+//     payerId / payerContactId is set — enforced in the service layer).
+//  3. Balance & settlement layer is computed from unpaid ExpenseShares.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         String  @id @default(uuid())
+  telegramId BigInt  @unique // Telegram user id (from validated initData)
+  username   String?
+  firstName  String
+  lastName   String?
+  // Addendum v1.1: filled ONLY after the user shares their contact in Telegram.
+  // Used purely as a matching key for virtual contacts; never shown to others.
+  phone      String? @unique
+
+  paymentsMade     Expense[]      @relation("ExpensePayer")
+  expensesCreated  Expense[]      @relation("ExpenseCreator")
+  sharesReceived   ExpenseShare[] @relation("UserShares")
+  contactsOwned    Contact[]      @relation("ContactOwner")
+  linkedFromContacts Contact[]    @relation("LinkedUser")
+
+  createdAt DateTime @default(now())
+}
+
+// A colleague of the owner — either a real user (linkedUserId set) or a
+// "virtual contact" that only exists as name (+phone) in the owner's list.
+model Contact {
+  id    String  @id @default(uuid())
+  name  String // Display name, local to the owner
+  // Addendum v1.1: normalized E.164 (e.g. +98912...). Required for auto-linking;
+  // a contact without a phone can never auto-link.
+  phone String?
+
+  linkedUserId String?
+  linkedUser   User?   @relation("LinkedUser", fields: [linkedUserId], references: [id])
+
+  ownerId String
+  owner   User   @relation("ContactOwner", fields: [ownerId], references: [id])
+
+  shares       ExpenseShare[] @relation("ContactShares")
+  expensesPaid Expense[]      @relation("ExpensePayerContact")
+
+  createdAt DateTime @default(now())
+
+  @@unique([ownerId, name]) // An owner can only have one "Ali" in their list
+  @@index([phone]) // Phone-matching lookups for Addendum v1.1 linking
+}
+
+model Expense {
+  id          String @id @default(uuid())
+  title       String
+  totalAmount Int // Stored in Tomans (smallest unit we deal in)
+
+  // Addendum v1.1: exactly ONE payer kind must be set (enforced in service):
+  payerId        String? // payer is a registered User
+  payer          User?    @relation("ExpensePayer", fields: [payerId], references: [id])
+  payerContactId String? // payer is a (possibly virtual) Contact
+  payerContact   Contact? @relation("ExpensePayerContact", fields: [payerContactId], references: [id])
+
+  createdById String
+  createdBy   User   @relation("ExpenseCreator", fields: [createdById], references: [id])
+
+  shares    ExpenseShare[]
+  createdAt DateTime       @default(now())
+}
+
+model ExpenseShare {
+  id       String  @id @default(uuid())
+  amount   Int
+  isPaid   Boolean @default(false)
+
+  expenseId String
+  expense   Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+
+  // The share belongs to EITHER a registered user OR a contact (exactly one).
+  userId    String?
+  user      User?    @relation("UserShares", fields: [userId], references: [id])
+  contactId String?
+  contact   Contact? @relation("ContactShares", fields: [contactId], references: [id])
+
+  createdAt DateTime @default(now())
+}

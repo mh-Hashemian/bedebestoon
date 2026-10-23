@@ -1,0 +1,19 @@
+{
+  "description": "Telegram Mini App for shared expense & debt settlement among coworkers and friends",
+  "engines": {
+    "node": ">=20"
+  },
+  "name": "telegram-expense-app",
+  "private": true,
+  "scripts": {
+    "build": "npm run build -w @app/api && npm run build -w @app/web",
+    "dev:api": "npm run start:dev -w @app/api",
+    "dev:web": "npm run dev -w @app/web",
+    "start": "npm run prisma:push -w @app/api && npm run start -w @app/api",
+    "test": "npm run test -w @app/api && npm run test -w @app/web"
+  },
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ]
+}
