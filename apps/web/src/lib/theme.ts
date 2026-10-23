@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react';
 
 /** Visual tokens from Mohammad's mockups (design/mockup-*.png). */
-export const BLUE = 'var(--tgui--button_color, #2f7cf6)';
+export const BLUE = '#2f7cf6';
 export const GREEN = '#34a853';
 export const GREEN_TINT = 'rgba(52, 168, 83, 0.10)';
 export const RED = '#e5484d';

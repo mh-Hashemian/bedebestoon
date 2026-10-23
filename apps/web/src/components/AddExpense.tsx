@@ -397,7 +397,7 @@ export function AddExpense({
             <>
               <FieldLabel>🕐 پیشنهادهای اخیر</FieldLabel>
               <div style={{ fontSize: 12.5, opacity: 0.6, marginTop: -4 }}>
-                از همکاران پرتکرار خود انتخاب کنید
+                از مخاطب‌های پرتکرار انتخاب کنید
               </div>
               <div
                 style={{
@@ -496,9 +496,9 @@ export function AddExpense({
           </div>
 
           {/* Searchable colleague list */}
-          <FieldLabel>👥 انتخاب همکاران</FieldLabel>
+          <FieldLabel>👥 انتخاب افراد</FieldLabel>
           <Input
-            placeholder="جستجوی همکار…"
+            placeholder="جستجوی مخاطب…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             before={<span style={{ opacity: 0.5 }}>🔍</span>}
@@ -533,8 +533,8 @@ export function AddExpense({
                       {key === ME
                         ? 'حساب خودم'
                         : contact?.linkedUserId
-                          ? 'همکار • وصل شده'
-                          : 'همکار • هنوز وارد اپ نشده'}
+                          ? 'مخاطب • وصل شده'
+                          : 'مخاطب • هنوز وارد اپ نشده'}
                     </div>
                   </div>
                   {isSelected && (
@@ -574,7 +574,7 @@ export function AddExpense({
             })}
             {filteredContacts.length === 0 && contacts.length > 0 && (
               <div style={{ padding: '10px 2px', opacity: 0.65 }}>
-                همکاری با این نام پیدا نشد.
+                مخاطبی با این نام پیدا نشد.
               </div>
             )}
           </div>
@@ -590,14 +590,14 @@ export function AddExpense({
               gap: 9,
             }}
           >
-            <div style={{ fontWeight: 700 }}>👤 افزودن همکار جدید</div>
+            <div style={{ fontWeight: 700 }}>👤 افزودن مخاطب جدید</div>
             <div style={{ fontSize: 12.5, opacity: 0.65, marginTop: -5 }}>
-              نام همکار را وارد کنید؛ شماره برای وصل‌شدن خودکار حسابش لازم
+              نام مخاطب را وارد کنید؛ شماره برای وصل‌شدن خودکار حسابش لازم
               است.
             </div>
             <Input
               id="dong-new-contact-name"
-              placeholder="نام همکار"
+              placeholder="نام مخاطب"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
             />

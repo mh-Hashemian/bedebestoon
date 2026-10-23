@@ -40,6 +40,28 @@
   --tgui--font-family: 'Vazirmatn', -apple-system, 'Segoe UI', Tahoma, sans-serif;
 }
 
+/* The mockups define ONE fixed light palette. telegram-ui derives its
+   theme variables from the phone's Telegram theme (a dark theme with a
+   green accent made text white-on-light and buttons green), so pin the
+   core variables for the whole app subtree — !important beats both the
+   inline variables AppRoot sets and Telegram's --tg-theme-* mapping. */
+#root * {
+  --tgui--text_color: #000000 !important;
+  --tgui--hint_color: #707579 !important;
+  --tgui--subtitle_text_color: #707579 !important;
+  --tgui--section_header_text_color: #6d7885 !important;
+  --tgui--bg_color: #ffffff !important;
+  --tgui--secondary_bg_color: #eef3f9 !important;
+  --tgui--section_bg_color: #ffffff !important;
+  --tgui--header_bg_color: #ffffff !important;
+  --tgui--bottom_bar_bg_color: #ffffff !important;
+  --tgui--button_color: #2f7cf6 !important;
+  --tgui--button_text_color: #ffffff !important;
+  --tgui--link_color: #2f7cf6 !important;
+  --tgui--accent_text_color: #2f7cf6 !important;
+  --tgui--destructive_text_color: #e5484d !important;
+}
+
 html,
 body {
   background: var(--tgui--secondary_bg_color, #eef3f9);

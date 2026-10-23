@@ -23,7 +23,21 @@ const webDist = join(__dirname, '..', '..', '..', 'apps', 'web', 'dist');
     // Only registered when the web bundle exists, so API-only dev/test runs
     // and fresh clones (before `npm run build`) keep working.
     ...(existsSync(webDist)
-      ? [ServeStaticModule.forRoot({ rootPath: webDist })]
+      ? [
+          ServeStaticModule.forRoot({
+            rootPath: webDist,
+            serveStaticOptions: {
+              // Telegram's webview caches index.html hard; without this a
+              // redeploy keeps serving the old bundle on users' phones.
+              // Hashed assets can cache forever, the entry page must not.
+              setHeaders: (res, filePath) => {
+                if (filePath.endsWith('index.html')) {
+                  res.setHeader('Cache-Control', 'no-cache');
+                }
+              },
+            },
+          }),
+        ]
       : []),
     PrismaModule,
     UsersModule,
