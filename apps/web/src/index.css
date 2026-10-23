@@ -1,14 +1,53 @@
 /* Design language (see design/mockup-*.png — the Phase 2 design reference):
    soft white cards with ~20px radii and gentle shadows on a light
    gray-blue backdrop; primary blue comes from Telegram's button color,
-   green marks positive/valid states, red marks money owed. telegram-ui
-   theme variables keep everything correct in Telegram's dark mode too. */
+   green marks positive/valid states, red marks money owed. The mockups
+   are a LIGHT design, so AppRoot pins appearance="light" — following the
+   phone's dark mode here produced white text on light custom surfaces. */
+
+/* Vazirmatn, self-hosted (public/fonts/) so it also loads where Google
+   Fonts is unreachable. Weights match the app's usage: 400/500/600/700. */
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --tgui--font-family: 'Vazirmatn', -apple-system, 'Segoe UI', Tahoma, sans-serif;
+}
 
 html,
 body {
   background: var(--tgui--secondary_bg_color, #eef3f9);
+  font-family: 'Vazirmatn', -apple-system, 'Segoe UI', Tahoma, sans-serif;
 }
 
-input {
+input,
+button,
+textarea {
   font-family: inherit;
 }

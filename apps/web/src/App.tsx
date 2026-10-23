@@ -20,7 +20,7 @@ function BrowserNotice() {
     <Placeholder
       header="این مینی‌اپ باید داخل تلگرام باز شود"
       description={
-        'دنگ یک مینی‌اپ تلگرامی است و اطلاعات حساب تو را فقط از تلگرام ' +
+        'بده‌بستون یک مینی‌اپ تلگرامی است و اطلاعات حساب تو را فقط از تلگرام ' +
         'می‌خواند؛ برای همین در مرورگر معمولی چیزی نمایش داده نمی‌شود و ' +
         'هیچ دادهٔ ساختگی‌ای هم نشان نمی‌دهیم. ربات @bedebestoonrobot را در ' +
         'تلگرام باز کن و از دکمهٔ منو وارد شو. برای توسعهٔ محلی می‌توانی ' +
@@ -75,7 +75,9 @@ export default function App() {
   }, [env]);
 
   return (
-    <AppRoot>
+    // The design mockups are a light theme; pinning appearance keeps the
+    // app identical (and readable) on phones set to Telegram dark mode.
+    <AppRoot appearance="light">
       {env.kind === 'mock' && (
         <div
           style={{
