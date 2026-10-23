@@ -35,11 +35,17 @@ function BrowserNotice() {
 function Shell({ api }: { api: ApiClient }) {
   const [tab, setTab] = useState<'dashboard' | 'contacts'>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<'expense' | 'debt'>('expense');
 
   return (
     <AppStateProvider api={api}>
       {tab === 'dashboard' ? (
-        <Dashboard onAddExpense={() => setAddOpen(true)} />
+        <Dashboard
+          onAddExpense={(m) => {
+            setAddMode(m);
+            setAddOpen(true);
+          }}
+        />
       ) : (
         <ContactsScreen />
       )}
@@ -59,7 +65,11 @@ function Shell({ api }: { api: ApiClient }) {
           <span style={{ fontSize: 22 }}>👥</span>
         </Tabbar.Item>
       </Tabbar>
-      <AddExpense open={addOpen} onClose={() => setAddOpen(false)} />
+      <AddExpense
+        open={addOpen}
+        initialMode={addMode}
+        onClose={() => setAddOpen(false)}
+      />
     </AppStateProvider>
   );
 }

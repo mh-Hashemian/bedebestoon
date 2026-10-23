@@ -118,14 +118,21 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
 export function AddExpense({
   open,
   onClose,
+  initialMode = 'expense',
 }: {
   open: boolean;
   onClose: () => void;
+  initialMode?: 'expense' | 'debt';
 }) {
   const { api, me, contacts, recentContacts, upsertContact, refresh } =
     useAppState();
 
   const [view, setView] = useState<'main' | 'custom'>('main');
+  const [mode, setMode] = useState<'expense' | 'debt'>('expense');
+  const [debtDirection, setDebtDirection] = useState<'iOwe' | 'theyOwe'>(
+    'iOwe',
+  );
+  const [debtPerson, setDebtPerson] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [amountRaw, setAmountRaw] = useState('');
   const [payerKey, setPayerKey] = useState<ParticipantKey>(ME);
@@ -148,6 +155,9 @@ export function AddExpense({
   useEffect(() => {
     if (open) {
       setView('main');
+      setMode(initialMode);
+      setDebtDirection('iOwe');
+      setDebtPerson(null);
       setTitle('');
       setAmountRaw('');
       setPayerKey(ME);
@@ -160,7 +170,7 @@ export function AddExpense({
       setNewName('');
       setNewPhone('');
     }
-  }, [open ]);
+  }, [open, initialMode ]);
 
   const nameOf = (key: ParticipantKey): string =>
     key === ME ? 'خودم' : (contacts.find((c) => c.id === key)?.name ?? '؟');
@@ -172,9 +182,18 @@ export function AddExpense({
   const customSum = sumAmounts(customAmountsInOrder);
   const remaining = amount - customSum;
   const customValid =
-    splitMode === 'equal' || isValidCustomSplit(amount, customAmountsInOrder);
+    mode === 'debt' ||
+    splitMode === 'equal' ||
+    isValidCustomSplit(amount, customAmountsInOrder);
+  const debtAutoTitle = debtPerson
+    ? debtDirection === 'iOwe'
+      ? `بدهی به ${nameOf(debtPerson)}`
+      : `طلب از ${nameOf(debtPerson)}`
+    : '';
   const formValid =
-    amount > 0 && title.trim().length > 0 && selected.length >= 1;
+    mode === 'debt'
+      ? amount > 0 && debtPerson !== null
+      : amount > 0 && title.trim().length > 0 && selected.length >= 1;
 
   const toggleParticipant = (key: ParticipantKey) => {
     hapticTap();
@@ -204,21 +223,36 @@ export function AddExpense({
     setSubmitting(true);
     setError(null);
     try {
-      const participants: CreateExpenseInput['participants'] = selected.map(
-        (key, i) => {
-          const base =
-            key === ME ? { userId: me.id } : { contactId: key };
-          return splitMode === 'custom'
-            ? { ...base, amount: customAmountsInOrder[i] }
-            : base;
-        },
-      );
-      await api.createExpense({
-        title: title.trim(),
-        totalAmount: amount,
-        payerContactId: payerKey === ME ? undefined : payerKey,
-        participants,
-      });
+      if (mode === 'debt' && debtPerson) {
+        // A plain personal debt, expressed with the expense model: the
+        // lender is the "payer" and the borrower is the only participant,
+        // so no custom split is ever needed.
+        await api.createExpense({
+          title: title.trim() || debtAutoTitle,
+          totalAmount: amount,
+          payerContactId: debtDirection === 'iOwe' ? debtPerson : undefined,
+          participants:
+            debtDirection === 'iOwe'
+              ? [{ userId: me.id }]
+              : [{ contactId: debtPerson }],
+        });
+      } else {
+        const participants: CreateExpenseInput['participants'] = selected.map(
+          (key, i) => {
+            const base =
+              key === ME ? { userId: me.id } : { contactId: key };
+            return splitMode === 'custom'
+              ? { ...base, amount: customAmountsInOrder[i] }
+              : base;
+          },
+        );
+        await api.createExpense({
+          title: title.trim(),
+          totalAmount: amount,
+          payerContactId: payerKey === ME ? undefined : payerKey,
+          participants,
+        });
+      }
       hapticSuccess();
       await refresh().catch(() => {});
       onClose();
@@ -240,7 +274,9 @@ export function AddExpense({
                 : 'تایید و ثبت نهایی'
               : submitting
                 ? 'در حال ثبت…'
-                : 'ثبت و ارسال',
+                : mode === 'debt'
+                  ? 'ثبت بدهی'
+                  : 'ثبت و ارسال',
           enabled: formValid && customValid,
           loading: submitting,
           onClick: () => void submit(),
@@ -261,9 +297,13 @@ export function AddExpense({
       hapticSuccess();
       setNewName('');
       setNewPhone('');
-      setSelected((prev) =>
-        prev.includes(contact.id) ? prev : [...prev, contact.id],
-      );
+      if (mode === 'debt') {
+        setDebtPerson(contact.id);
+      } else {
+        setSelected((prev) =>
+          prev.includes(contact.id) ? prev : [...prev, contact.id],
+        );
+      }
     } catch (err) {
       hapticError();
       setCreateError(friendlyError(err));
@@ -293,11 +333,15 @@ export function AddExpense({
         padding: '14px 18px 4px',
       }}
     >
-      <span style={{ fontSize: 19 }}>💼</span>
+      <span style={{ fontSize: 19 }}>
+        {mode === 'debt' && view === 'main' ? '💸' : '💼'}
+      </span>
       <span style={{ fontWeight: 800, fontSize: 16, flex: 1 }}>
         {view === 'custom'
           ? 'تنظیم سهم افراد (Custom Split)'
-          : 'ثبت خرج گروهی'}
+          : mode === 'debt'
+            ? 'ثبت بدهی'
+            : 'ثبت خرج گروهی'}
       </span>
       <button
         type="button"
@@ -327,6 +371,50 @@ export function AddExpense({
     >
       {view === 'main' ? (
         <div style={{ padding: '0 18px 30px' }}>
+          {/* Mode switch: group expense vs plain personal debt */}
+          <div
+            style={{
+              display: 'flex',
+              background:
+                'var(--tgui--secondary_bg_color, #f2f6fb)',
+              borderRadius: 12,
+              padding: 4,
+              gap: 4,
+              marginTop: 12,
+            }}
+          >
+            {(
+              [
+                ['expense', '🧾 خرج گروهی'],
+                ['debt', '💸 بدهی'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => {
+                  hapticTap();
+                  setMode(key);
+                }}
+                style={{
+                  flex: 1,
+                  border: 'none',
+                  cursor: 'pointer',
+                  borderRadius: 9,
+                  padding: '9px 0',
+                  fontWeight: 700,
+                  fontSize: 14,
+                  fontFamily: 'inherit',
+                  background: mode === key ? BLUE : 'transparent',
+                  color:
+                    mode === key ? '#fff' : 'var(--tgui--text_color)',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           {/* Amount + quick chips */}
           <FieldLabel>مبلغ کل</FieldLabel>
           <Input
@@ -337,13 +425,155 @@ export function AddExpense({
             after={<span style={{ opacity: 0.55, fontSize: 13 }}>تومان</span>}
           />
           {/* Title */}
-          <FieldLabel>عنوان خرج</FieldLabel>
+          <FieldLabel>
+            {mode === 'debt' ? 'عنوان (اختیاری)' : 'عنوان خرج'}
+          </FieldLabel>
           <Input
-            placeholder="مثلاً ناهار رستوران"
+            placeholder={
+              mode === 'debt'
+                ? debtAutoTitle || 'مثلاً قرض دستی'
+                : 'مثلاً ناهار رستوران'
+            }
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
 
+          {mode === 'debt' ? (
+            <>
+              <FieldLabel>💸 نوع بدهی</FieldLabel>
+              <div
+                style={{
+                  display: 'flex',
+                  background: 'var(--tgui--secondary_bg_color, #f2f6fb)',
+                  borderRadius: 12,
+                  padding: 4,
+                  gap: 4,
+                }}
+              >
+                {(
+                  [
+                    ['iOwe', 'من بدهکارم'],
+                    ['theyOwe', 'اون به من بدهکاره'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => {
+                      hapticTap();
+                      setDebtDirection(key);
+                    }}
+                    style={{
+                      flex: 1,
+                      border: 'none',
+                      cursor: 'pointer',
+                      borderRadius: 9,
+                      padding: '9px 0',
+                      fontWeight: 700,
+                      fontSize: 14,
+                      fontFamily: 'inherit',
+                      background: debtDirection === key ? BLUE : 'transparent',
+                      color:
+                        debtDirection === key
+                          ? '#fff'
+                          : 'var(--tgui--text_color)',
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <FieldLabel>👤 طرف حساب</FieldLabel>
+              <Input
+                placeholder="جستجوی مخاطب…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                before={<span style={{ opacity: 0.5 }}>🔍</span>}
+              />
+              <div style={{ marginTop: 6 }}>
+                {filteredContacts.map((c) => {
+                  const active = debtPerson === c.id;
+                  return (
+                    <div
+                      key={c.id}
+                      onClick={() => {
+                        hapticTap();
+                        setDebtPerson(c.id);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        padding: '10px 2px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid rgba(120,140,170,0.10)',
+                      }}
+                    >
+                      <InitialAvatar name={c.name} size={42} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600 }}>{c.name}</div>
+                        <div style={{ fontSize: 12.5, opacity: 0.6 }}>
+                          {c.linkedUserId
+                            ? 'وصل شده'
+                            : 'هنوز وارد اپ نشده'}
+                        </div>
+                      </div>
+                      <span
+                        style={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: '50%',
+                          border: `2px solid ${active ? BLUE : 'rgba(120,140,170,0.45)'}`,
+                          background: active ? BLUE : 'transparent',
+                          color: '#fff',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 13,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {active ? '✓' : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+                {filteredContacts.length === 0 && (
+                  <div style={{ padding: '10px 2px', opacity: 0.65 }}>
+                    {contacts.length === 0
+                      ? 'هنوز مخاطبی نداری؛ از فرم پایین این صفحه یکی اضافه کن.'
+                      : 'مخاطبی با این نام پیدا نشد.'}
+                  </div>
+                )}
+              </div>
+
+              {amount > 0 && debtPerson && (
+                <div
+                  style={{
+                    background: 'var(--tgui--secondary_bg_color, #f2f6fb)',
+                    borderRadius: 16,
+                    padding: 14,
+                    marginTop: 16,
+                    fontSize: 14.5,
+                  }}
+                >
+                  {debtDirection === 'iOwe' ? (
+                    <>
+                      تو به <b>{nameOf(debtPerson)}</b> مبلغ{' '}
+                      <b>{formatToman(amount)}</b> بدهکار می‌شی.
+                    </>
+                  ) : (
+                    <>
+                      <b>{nameOf(debtPerson)}</b> مبلغ{' '}
+                      <b>{formatToman(amount)}</b> به تو بدهکار می‌شه.
+                    </>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
           {/* Payer */}
           <FieldLabel>پرداخت‌کننده</FieldLabel>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -546,6 +776,9 @@ export function AddExpense({
             )}
           </div>
 
+            </>
+          )}
+
           {/* Inline new colleague — pinned at the bottom of the sheet */}
           <div
             style={{
@@ -589,7 +822,7 @@ export function AddExpense({
           </div>
 
           {/* Equal-split auto-calc box / custom summary */}
-          {splitMode === 'equal' ? (
+          {mode === 'expense' && (splitMode === 'equal' ? (
             <div
               style={{
                 background: 'var(--tgui--secondary_bg_color, #f2f6fb)',
@@ -675,7 +908,7 @@ export function AddExpense({
                 ویرایش سهم‌ها
               </Button>
             </div>
-          )}
+          ))}
 
           <ErrorNote>{error}</ErrorNote>
           {showFallbackButton && (
@@ -687,7 +920,7 @@ export function AddExpense({
               onClick={() => void submit()}
               style={{ marginTop: 14 }}
             >
-              ثبت و ارسال ✈️
+              {mode === 'debt' ? 'ثبت بدهی 💸' : 'ثبت و ارسال ✈️'}
             </Button>
           )}
         </div>

@@ -121,7 +121,11 @@ function TransactionCard({
   );
 }
 
-export function Dashboard({ onAddExpense }: { onAddExpense: () => void }) {
+export function Dashboard({
+  onAddExpense,
+}: {
+  onAddExpense: (mode: 'expense' | 'debt') => void;
+}) {
   const { me, contacts, balances, expenses, loading, loadError, refresh } =
     useAppState();
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
@@ -282,7 +286,7 @@ export function Dashboard({ onAddExpense }: { onAddExpense: () => void }) {
       <div style={{ display: 'flex', gap: 10, padding: '14px 16px 0' }}>
         <Button
           size="l"
-          onClick={onAddExpense}
+          onClick={() => onAddExpense('expense')}
           style={{ flex: 1.35 }}
         >
           + ثبت خرج گروهی
@@ -294,6 +298,16 @@ export function Dashboard({ onAddExpense }: { onAddExpense: () => void }) {
           style={{ flex: 1 }}
         >
           🤝 تسویه حساب
+        </Button>
+      </div>
+      <div style={{ padding: '10px 16px 0' }}>
+        <Button
+          size="l"
+          mode="bezeled"
+          stretched
+          onClick={() => onAddExpense('debt')}
+        >
+          💸 ثبت بدهی
         </Button>
       </div>
 
