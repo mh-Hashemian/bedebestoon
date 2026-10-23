@@ -56,6 +56,7 @@ export interface ApiClient {
   deleteExpense(id: string): Promise<void>;
   getBalances(): Promise<Balance[]>;
   settleShare(shareId: string): Promise<void>;
+  unsettleShare(shareId: string): Promise<void>;
 }
 
 /**
@@ -139,6 +140,11 @@ export class HttpApiClient implements ApiClient {
   }
   async settleShare(shareId: string) {
     await this.request<unknown>(`/shares/${shareId}/settle`, {
+      method: 'POST',
+    });
+  }
+  async unsettleShare(shareId: string) {
+    await this.request<unknown>(`/shares/${shareId}/unsettle`, {
       method: 'POST',
     });
   }

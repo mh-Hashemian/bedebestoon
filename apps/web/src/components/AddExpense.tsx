@@ -29,7 +29,6 @@ import { useAppState } from '../state/AppState';
 type ParticipantKey = string;
 const ME: ParticipantKey = 'me';
 
-const QUICK_CHIPS = [50_000, 100_000, 500_000];
 
 /** Circular avatar with an optional blue ✓ badge (mockup participant chips). */
 function AvatarChip({
@@ -91,7 +90,9 @@ function AvatarChip({
           </span>
         )}
       </span>
-      <span style={{ fontSize: 12.5 }}>{caption ?? name.split(' ')[0]}</span>
+      <span style={{ fontSize: 12.5, color: 'var(--tgui--text_color)' }}>
+        {caption ?? name.split(' ')[0]}
+      </span>
     </button>
   );
 }
@@ -107,7 +108,7 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
 /**
  * The core flow of the app, designed from Mohammad's mockups
  * (design/mockup-add-expense.png + mockup-custom-split.png): ONE bottom
- * sheet that contains amount + quick chips, title, payer, recent
+ * sheet that contains amount, title, payer,
  * suggestions, participant selection (avatar chips + searchable list),
  * inline contact creation and the equal-split auto-calc box — plus a
  * dedicated Custom Split view inside the same sheet. Submission goes
@@ -335,40 +336,6 @@ export function AddExpense({
             onChange={(e) => setAmountRaw(e.target.value)}
             after={<span style={{ opacity: 0.55, fontSize: 13 }}>تومان</span>}
           />
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              marginTop: 10,
-              flexWrap: 'wrap',
-            }}
-          >
-            <span style={{ fontSize: 13, fontWeight: 700 }}>⚡ میانبرهای سریع</span>
-            {QUICK_CHIPS.map((chip) => (
-              <button
-                key={chip}
-                type="button"
-                onClick={() => {
-                  hapticTap();
-                  setAmountRaw(String(amount + chip));
-                }}
-                style={{
-                  background: BLUE_TINT,
-                  color: BLUE,
-                  border: 'none',
-                  borderRadius: 999,
-                  padding: '7px 14px',
-                  fontWeight: 700,
-                  fontSize: 13.5,
-                  cursor: 'pointer',
-                }}
-              >
-                + {formatNumberFa(chip)}
-              </button>
-            ))}
-          </div>
-
           {/* Title */}
           <FieldLabel>عنوان خرج</FieldLabel>
           <Input
@@ -601,12 +568,14 @@ export function AddExpense({
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
             />
-            <Input
-              placeholder="شماره موبایل — ۰۹۱۲۳۴۵۶۷۸۹"
-              inputMode="tel"
-              value={newPhone}
-              onChange={(e) => setNewPhone(e.target.value)}
-            />
+            <div className="ltr-field">
+              <Input
+                placeholder="شماره موبایل — ۰۹۱۲۳۴۵۶۷۸۹"
+                inputMode="tel"
+                value={newPhone}
+                onChange={(e) => setNewPhone(e.target.value)}
+              />
+            </div>
             <ErrorNote>{createError}</ErrorNote>
             <Button
               size="s"

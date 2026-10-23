@@ -126,13 +126,15 @@ export function ContactsScreen() {
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
-          <Input
-            header="شماره موبایل (برای وصل‌شدن خودکار)"
-            placeholder="۰۹۱۲۳۴۵۶۷۸۹"
-            inputMode="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-          />
+          <div className="ltr-field">
+            <Input
+              header="شماره موبایل (برای وصل‌شدن خودکار)"
+              placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+              inputMode="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+            />
+          </div>
           <ErrorNote>{error}</ErrorNote>
           {notice && (
             <div style={{ padding: '0 4px' }}>

@@ -72,3 +72,9 @@ textarea {
   direction: rtl;
   text-align: right;
 }
+
+/* Phone-number fields are the exception: their content stays LTR. */
+#root .ltr-field input {
+  direction: ltr !important;
+  text-align: left !important;
+}

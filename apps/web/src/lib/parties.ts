@@ -76,6 +76,22 @@ export function canSettleShare(
   );
 }
 
+/** Undoing a settlement is allowed for the same people who could settle. */
+export function canUnsettleShare(
+  expense: Expense,
+  share: Share,
+  myUserId: string,
+): boolean {
+  if (!share.isPaid) return false;
+  return (
+    expense.payerId === myUserId ||
+    expense.createdById === myUserId ||
+    expense.payerContact?.linkedUserId === myUserId ||
+    share.userId === myUserId ||
+    share.contact?.linkedUserId === myUserId
+  );
+}
+
 /** The share in this expense that belongs to the current user, if any. */
 export function myShareOf(expense: Expense, myUserId: string): Share | null {
   const myKey = userPartyKey(myUserId);

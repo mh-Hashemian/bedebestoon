@@ -3,7 +3,11 @@ import { Button, Cell, Text } from '@telegram-apps/telegram-ui';
 import { friendlyError } from '../api/client';
 import type { Expense, Share } from '../api/types';
 import { formatNumberFa, formatToman } from '../lib/format';
-import { canSettleShare, shareDisplayName } from '../lib/parties';
+import {
+  canSettleShare,
+  canUnsettleShare,
+  shareDisplayName,
+} from '../lib/parties';
 import { colorForName, GREEN, RED } from '../lib/theme';
 import { hapticError, hapticSuccess } from '../telegram/actions';
 import { useAppState } from '../state/AppState';
@@ -128,13 +132,15 @@ export function ShareRow({
   expense: Expense;
   share: Share;
 }) {
-  const { me, settle } = useAppState();
+  const { me, settle, unsettle } = useAppState();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [armUndo, setArmUndo] = useState(false);
   if (!me) return null;
 
   const name = shareDisplayName(share, me.firstName);
   const allowed = canSettleShare(expense, share, me.id);
+  const canUndo = canUnsettleShare(expense, share, me.id);
 
   const onSettle = async () => {
     setBusy(true);
@@ -147,6 +153,27 @@ export function ShareRow({
       setError(friendlyError(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onUnsettle = async () => {
+    // Two-step: an accidental tap is what this toggle exists to fix.
+    if (!armUndo) {
+      setArmUndo(true);
+      setTimeout(() => setArmUndo(false), 4000);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await unsettle(share.id);
+      hapticSuccess();
+    } catch (err) {
+      hapticError();
+      setError(friendlyError(err));
+    } finally {
+      setBusy(false);
+      setArmUndo(false);
     }
   };
 
@@ -176,6 +203,24 @@ export function ShareRow({
               style={{ marginTop: 6 }}
             >
               تسویه شد
+            </Button>
+          )}
+          {canUndo && (
+            <Button
+              size="s"
+              mode="plain"
+              loading={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                void onUnsettle();
+              }}
+              style={{
+                marginTop: 2,
+                color: armUndo ? RED : undefined,
+                fontWeight: armUndo ? 700 : undefined,
+              }}
+            >
+              {armUndo ? 'مطمئنی؟ برگرده' : '↩ برگردوندن'}
             </Button>
           )}
           {error && (

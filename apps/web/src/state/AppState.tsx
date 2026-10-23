@@ -23,6 +23,7 @@ interface AppState {
   loadError: string | null;
   refresh: () => Promise<void>;
   settle: (shareId: string) => Promise<void>;
+  unsettle: (shareId: string) => Promise<void>;
   /** Replace the contact list locally after an inline creation. */
   upsertContact: (contact: Contact) => void;
 }
@@ -85,6 +86,14 @@ export function AppStateProvider({
     [refresh],
   );
 
+  const unsettle = useCallback(
+    async (shareId: string) => {
+      await apiRef.current.unsettleShare(shareId);
+      await refresh().catch(() => {});
+    },
+    [refresh],
+  );
+
   const upsertContact = useCallback((contact: Contact) => {
     setContacts((prev) => {
       const rest = prev.filter((c) => c.id !== contact.id);
@@ -106,6 +115,7 @@ export function AppStateProvider({
       loadError,
       refresh,
       settle,
+      unsettle,
       upsertContact,
     }),
     [
@@ -119,6 +129,7 @@ export function AppStateProvider({
       loadError,
       refresh,
       settle,
+      unsettle,
       upsertContact,
     ],
   );

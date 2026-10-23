@@ -30,4 +30,13 @@ export class BalancesController {
   ) {
     return this.balances.settleShare(user.id, shareId);
   }
+
+  /** Undo a settlement (accidental taps happen). */
+  @Post('shares/:id/unsettle')
+  unsettle(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) shareId: string,
+  ) {
+    return this.balances.unsettleShare(user.id, shareId);
+  }
 }

@@ -335,6 +335,17 @@ export class MockApiClient implements ApiClient {
     throw new ApiError(404, 'Share not found');
   }
 
+  async unsettleShare(shareId: string): Promise<void> {
+    for (const e of this.expenses) {
+      const share = e.shares.find((s) => s.id === shareId);
+      if (share) {
+        share.isPaid = false;
+        return;
+      }
+    }
+    throw new ApiError(404, 'Share not found');
+  }
+
   async deleteExpense(id: string): Promise<void> {
     const idx = this.expenses.findIndex((e) => e.id === id);
     if (idx === -1) throw new ApiError(404, 'Expense not found');

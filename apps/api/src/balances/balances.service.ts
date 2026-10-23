@@ -170,4 +170,42 @@ export class BalancesService {
       data: { isPaid: true },
     });
   }
+
+  /**
+   * Undo a settlement (e.g. the settle button was tapped by mistake).
+   * Same involvement rule as settleShare.
+   */
+  async unsettleShare(userId: string, shareId: string) {
+    const share = await this.prisma.expenseShare.findUnique({
+      where: { id: shareId },
+      include: {
+        expense: {
+          include: {
+            payerContact: { select: { id: true, linkedUserId: true } },
+          },
+        },
+        contact: { select: { id: true, linkedUserId: true } },
+      },
+    });
+    if (!share) throw new NotFoundException('Share not found');
+
+    const e = share.expense;
+    const involved =
+      e.payerId === userId ||
+      e.createdById === userId ||
+      e.payerContact?.linkedUserId === userId ||
+      share.userId === userId ||
+      share.contact?.linkedUserId === userId;
+    if (!involved) {
+      throw new ForbiddenException(
+        'Only a participant or the payer of this expense can unsettle a share',
+      );
+    }
+
+    if (!share.isPaid) return share; // idempotent
+    return this.prisma.expenseShare.update({
+      where: { id: shareId },
+      data: { isPaid: false },
+    });
+  }
 }

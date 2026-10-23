@@ -96,13 +96,15 @@ export function PhonePrompt({ dismissible = true }: { dismissible?: boolean }) {
                 📱 اشتراک شماره با تلگرام
               </Button>
             )}
-            <Input
-              header="یا شماره را دستی وارد کن"
-              placeholder="۰۹۱۲۳۴۵۶۷۸۹"
-              inputMode="tel"
-              value={manual}
-              onChange={(e) => setManual(e.target.value)}
-            />
+            <div className="ltr-field">
+              <Input
+                header="یا شماره را دستی وارد کن"
+                placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+                inputMode="tel"
+                value={manual}
+                onChange={(e) => setManual(e.target.value)}
+              />
+            </div>
             <Button
               mode="bezeled"
               stretched
