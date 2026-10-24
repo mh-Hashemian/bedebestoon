@@ -148,3 +148,155 @@ describe('ContactsService.removeContact', () => {
     expect(prismaMock.contact.delete).not.toHaveBeenCalled();
   });
 });
+
+describe('ContactsService.ensureReverseContacts', () => {
+  type Owner = {
+    id: string;
+    firstName: string;
+    lastName: string | null;
+    username: string | null;
+    phone: string | null;
+  };
+  function makeService(opts: {
+    linkedToMe: { owner: Owner }[];
+    mine: { name: string; linkedUserId: string | null }[];
+  }) {
+    const prismaMock = {
+      contact: {
+        findMany: jest.fn().mockImplementation(({ where }) => {
+          if (where?.linkedUserId) {
+            return Promise.resolve(opts.linkedToMe);
+          }
+          return Promise.resolve(opts.mine);
+        }),
+        create: jest
+          .fn()
+          .mockImplementation(({ data }) =>
+            Promise.resolve({ id: 'new', ...data, linkedUser: null }),
+          ),
+      },
+    };
+    const service = new ContactsService(prismaMock as never);
+    return { service, prismaMock };
+  }
+
+  const owner: Owner = {
+    id: 'owner-1',
+    firstName: 'Mohammad',
+    lastName: null,
+    username: 'mohammad',
+    phone: '+989111111111',
+  };
+
+  it('creates a reverse contact for a linked owner', async () => {
+    const { service, prismaMock } = makeService({
+      linkedToMe: [{ owner }],
+      mine: [],
+    });
+    await service.ensureReverseContacts('joiner-1');
+    expect(prismaMock.contact.create).toHaveBeenCalledWith({
+      data: {
+        ownerId: 'joiner-1',
+        name: 'Mohammad',
+        phone: '+989111111111',
+        linkedUserId: 'owner-1',
+      },
+    });
+  });
+
+  it('skips owners that already have a reverse contact', async () => {
+    const { service, prismaMock } = makeService({
+      linkedToMe: [{ owner }],
+      mine: [{ name: 'Mohammad', linkedUserId: 'owner-1' }],
+    });
+    await service.ensureReverseContacts('joiner-1');
+    expect(prismaMock.contact.create).not.toHaveBeenCalled();
+  });
+
+  it('skips the joiner themselves', async () => {
+    const { service, prismaMock } = makeService({
+      linkedToMe: [{ owner: { ...owner, id: 'joiner-1' } }],
+      mine: [],
+    });
+    await service.ensureReverseContacts('joiner-1');
+    expect(prismaMock.contact.create).not.toHaveBeenCalled();
+  });
+
+  it('suffixes the name on collision instead of linking on name', async () => {
+    const { service, prismaMock } = makeService({
+      linkedToMe: [{ owner }],
+      mine: [{ name: 'Mohammad', linkedUserId: 'someone-else' }],
+    });
+    await service.ensureReverseContacts('joiner-1');
+    expect(prismaMock.contact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        name: 'Mohammad (@mohammad)',
+        linkedUserId: 'owner-1',
+      }),
+    });
+  });
+
+  it('does nothing when nobody linked to the user', async () => {
+    const { service, prismaMock } = makeService({
+      linkedToMe: [],
+      mine: [],
+    });
+    await service.ensureReverseContacts('joiner-1');
+    expect(prismaMock.contact.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContactsService.createContact phone linking', () => {
+  function makeService(userByPhone: { id: string } | null) {
+    const prismaMock = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue(userByPhone),
+      },
+      contact: {
+        create: jest
+          .fn()
+          .mockImplementation(({ data }) =>
+            Promise.resolve({ id: 'c1', ...data, linkedUser: null }),
+          ),
+      },
+    };
+    const service = new ContactsService(prismaMock as never);
+    return { service, prismaMock };
+  }
+
+  it('links immediately when the phone belongs to another user', async () => {
+    const { service, prismaMock } = makeService({ id: 'user-2' });
+    await service.createContact('owner-1', {
+      name: 'Reza',
+      phone: '09123456789',
+    });
+    expect(prismaMock.contact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ linkedUserId: 'user-2' }),
+      include: expect.anything(),
+    });
+  });
+
+  it('leaves the contact unlinked when the phone belongs to nobody', async () => {
+    const { service, prismaMock } = makeService(null);
+    await service.createContact('owner-1', {
+      name: 'Reza',
+      phone: '09123456789',
+    });
+    expect(prismaMock.contact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ linkedUserId: null }),
+      include: expect.anything(),
+    });
+  });
+
+  it('never links a contact to its own owner', async () => {
+    const { service, prismaMock } = makeService({ id: 'owner-1' });
+    await service.createContact('owner-1', {
+      name: 'Me',
+      phone: '09123456789',
+    });
+    expect(prismaMock.contact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ linkedUserId: null }),
+      include: expect.anything(),
+    });
+  });
+});

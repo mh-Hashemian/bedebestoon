@@ -35,9 +35,24 @@ export class ContactsService {
       }
     }
 
+    // Phone matching works both ways: if this number already belongs to a
+    // registered user, the contact is linked immediately instead of waiting
+    // for that user to share their number again (linking only ever happens
+    // on the phone number, never on the name).
+    let linkedUserId: string | null = null;
+    if (phone) {
+      const existingUser = await this.prisma.user.findUnique({
+        where: { phone },
+        select: { id: true },
+      });
+      if (existingUser && existingUser.id !== ownerId) {
+        linkedUserId = existingUser.id;
+      }
+    }
+
     try {
       return await this.prisma.contact.create({
-        data: { ownerId, name: dto.name.trim(), phone },
+        data: { ownerId, name: dto.name.trim(), phone, linkedUserId },
         include: { linkedUser: { select: LINKED_USER_SELECT } },
       });
     } catch (err) {
@@ -53,7 +68,77 @@ export class ContactsService {
     }
   }
 
+  /**
+   * Symmetry repair for phone linking. Linking is one-directional: when U
+   * shares their number, every contact pointing at U gets linked — but U's
+   * own contact list gains nobody. So a user who was added by someone else
+   * could see that person's debts yet never record one back, because the
+   * person picker only offers their own contacts. This creates the missing
+   * reverse contact (owner -> U becomes U -> owner) for every linked
+   * owner, unless one already exists. It runs inside listContacts, so it
+   * self-heals on the next app open — including for users who linked
+   * before this fix shipped. The owner's name is used (it is already
+   * visible to U in the shared expenses); the phone is stored only as a
+   * matching key and is never displayed.
+   */
+  async ensureReverseContacts(userId: string) {
+    const linkedToMe = await this.prisma.contact.findMany({
+      where: { linkedUserId: userId },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+            phone: true,
+          },
+        },
+      },
+    });
+    if (linkedToMe.length === 0) return;
+
+    const mine = await this.prisma.contact.findMany({
+      where: { ownerId: userId },
+      select: { name: true, linkedUserId: true },
+    });
+    const takenNames = new Set(mine.map((c) => c.name));
+
+    const owners = new Map<string, (typeof linkedToMe)[number]['owner']>();
+    for (const c of linkedToMe) {
+      if (c.owner.id !== userId && !owners.has(c.owner.id)) {
+        owners.set(c.owner.id, c.owner);
+      }
+    }
+
+    for (const owner of owners.values()) {
+      if (mine.some((c) => c.linkedUserId === owner.id)) continue;
+      const base = owner.lastName
+        ? `${owner.firstName} ${owner.lastName}`
+        : owner.firstName;
+      let name = base;
+      if (takenNames.has(name) && owner.username) {
+        name = `${base} (@${owner.username})`;
+      }
+      let n = 2;
+      while (takenNames.has(name)) {
+        name = `${base} (${n})`;
+        n += 1;
+      }
+      takenNames.add(name);
+      await this.prisma.contact.create({
+        data: {
+          ownerId: userId,
+          name,
+          phone: owner.phone ?? null,
+          linkedUserId: owner.id,
+        },
+      });
+    }
+  }
+
   async listContacts(ownerId: string) {
+    await this.ensureReverseContacts(ownerId);
     return this.prisma.contact.findMany({
       where: { ownerId },
       orderBy: { name: 'asc' },
