@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
+import { ErrorLoggingInterceptor } from './common/error-logging.interceptor';
 import { BalancesModule } from './balances/balances.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { ExpensesModule } from './expenses/expenses.module';
@@ -47,5 +49,8 @@ const webDist = join(__dirname, '..', '..', '..', 'apps', 'web', 'dist');
     BalancesModule,
   ],
   controllers: [AppController],
+  providers: [
+    { provide: APP_INTERCEPTOR, useClass: ErrorLoggingInterceptor },
+  ],
 })
 export class AppModule {}

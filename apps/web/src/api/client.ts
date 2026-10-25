@@ -32,6 +32,18 @@ export function friendlyError(err: unknown): string {
       return 'جمع سهم‌ها باید دقیقاً برابر مبلغ کل باشد.';
     if (m.includes('do not exist in your contact list'))
       return 'یکی از مخاطب‌های انتخاب‌شده در لیستت نیست.';
+    if (m.includes('only be yourself'))
+      return 'در این مرحله فقط خودت رو می‌تونی به‌عنوان کاربر انتخاب کنی؛ بقیه باید مخاطب باشن.';
+    if (m.includes('exactly one of userId or contactId'))
+      return 'هر شرکت‌کننده باید دقیقاً یک نفر باشد.';
+    if (m.includes('must be an integer'))
+      return 'مبلغ باید عدد صحیح باشد.';
+    if (m.includes('must not be less than 1'))
+      return 'مبلغ باید بیشتر از صفر باشد.';
+    if (m.includes('must be a UUID'))
+      return 'یکی از انتخاب‌ها معتبر نیست. اپ را ببند و دوباره باز کن.';
+    if (m.includes('must not be empty') || m.includes('should not be empty'))
+      return 'همه‌ی فیلدهای لازم را پر کن.';
     if (m.includes('used in expenses'))
       return 'این مخاطب در خرج‌ها استفاده شده و قابل حذف نیست.';
     if (err.status === 401)
@@ -88,13 +100,13 @@ export class HttpApiClient implements ApiClient {
       let message = `HTTP ${res.status}`;
       try {
         const body: unknown = await res.json();
-        if (
-          body &&
-          typeof body === 'object' &&
-          'message' in body &&
-          typeof (body as { message: unknown }).message === 'string'
-        ) {
-          message = (body as { message: string }).message;
+        if (body && typeof body === 'object' && 'message' in body) {
+          const m = (body as { message: unknown }).message;
+          // Validation errors arrive as an ARRAY of strings; previously the
+          // string-only check dropped them and the user saw the generic
+          // "server error" text for a plain validation failure.
+          if (typeof m === 'string') message = m;
+          else if (Array.isArray(m)) message = m.filter((x) => typeof x === 'string').join('; ');
         }
       } catch {
         // keep default message
