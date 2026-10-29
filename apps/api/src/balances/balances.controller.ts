@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
@@ -10,6 +11,7 @@ import { User } from '@prisma/client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { TelegramAuthGuard } from '../auth/telegram-auth.guard';
 import { BalancesService } from './balances.service';
+import { NetBalanceDto } from './dto/net-balance.dto';
 
 @Controller()
 @UseGuards(TelegramAuthGuard)
@@ -20,6 +22,15 @@ export class BalancesController {
   @Get('balances')
   getBalances(@CurrentUser() user: User) {
     return this.balances.getBalances(user.id);
+  }
+
+  /**
+   * «کم و وجه»: cross out the open shares between the user and one
+   * counterparty that cancel each other, leaving only the net remainder.
+   */
+  @Post('balances/net')
+  net(@CurrentUser() user: User, @Body() dto: NetBalanceDto) {
+    return this.balances.netWithCounterparty(user.id, dto.partyKey);
   }
 
   /** Mark a share as settled/paid. */

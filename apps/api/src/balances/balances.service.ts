@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -17,6 +18,19 @@ export interface CounterpartyBalance {
   name: string;
   /** Positive: they owe the current user. Negative: the current user owes them. */
   balance: number;
+}
+
+export interface NetResult {
+  /** Amount crossed out on EACH side (both sides lose exactly this much). */
+  offsetAmount: number;
+  /**
+   * Net balance with the counterparty after netting, signed like
+   * CounterpartyBalance.balance. Netting never changes it: it only closes
+   * the shares that cancel each other out.
+   */
+  balance: number;
+  /** Shares marked settled, including pieces created by splitting. */
+  settledShares: number;
 }
 
 interface Party {
@@ -207,5 +221,143 @@ export class BalancesService {
       where: { id: shareId },
       data: { isPaid: false },
     });
+  }
+
+  /**
+   * «کم و وجه» — netting between the current user and one counterparty:
+   * the open shares in the two directions cancel each other out up to the
+   * smaller side's total. That amount is marked settled on BOTH sides
+   * (oldest shares first), so afterwards only the net remainder stays open
+   * and the signed balance is unchanged.
+   *
+   * A share that straddles the offset boundary is split in two: the offset
+   * part becomes a new settled share on the same expense and the original
+   * keeps the remainder, so the expense's shares still sum to its total.
+   * Only shares whose creditor is one of the two parties and whose debtor
+   * is the other are touched — shares owed to a third-party payer in a
+   * group expense never offset each other.
+   */
+  async netWithCounterparty(
+    userId: string,
+    partyKey: string,
+  ): Promise<NetResult> {
+    if (!/^(user|contact):[A-Za-z0-9-]+$/.test(partyKey)) {
+      throw new BadRequestException(
+        'partyKey must be a counterparty key from GET /balances',
+      );
+    }
+    const meKey = `user:${userId}`;
+
+    const expenses = await this.prisma.expense.findMany({
+      where: {
+        OR: [
+          { payerId: userId },
+          { payerContact: { linkedUserId: userId } },
+          { shares: { some: { userId } } },
+          { shares: { some: { contact: { linkedUserId: userId } } } },
+        ],
+      },
+      include: {
+        payer: { select: USER_PUBLIC_SELECT },
+        payerContact: { select: CONTACT_PUBLIC_SELECT },
+        shares: {
+          where: { isPaid: false },
+          include: {
+            user: { select: USER_PUBLIC_SELECT },
+            contact: { select: CONTACT_PUBLIC_SELECT },
+          },
+        },
+      },
+    });
+
+    interface OpenShare {
+      id: string;
+      expenseId: string;
+      amount: number;
+      userId: string | null;
+      contactId: string | null;
+      createdAt: Date;
+    }
+    const credit: OpenShare[] = []; // counterparty owes the user
+    const debit: OpenShare[] = []; // user owes the counterparty
+
+    for (const expense of expenses) {
+      const payer: Party | null = expense.payer
+        ? partyFromUser(expense.payer)
+        : expense.payerContact
+          ? partyFromContact(expense.payerContact)
+          : null;
+      if (!payer) continue;
+
+      for (const share of expense.shares) {
+        const debtor: Party | null = share.user
+          ? partyFromUser(share.user)
+          : share.contact
+            ? partyFromContact(share.contact)
+            : null;
+        if (!debtor || debtor.key === payer.key) continue;
+
+        const open: OpenShare = {
+          id: share.id,
+          expenseId: expense.id,
+          amount: share.amount,
+          userId: share.userId,
+          contactId: share.contactId,
+          createdAt: share.createdAt,
+        };
+        if (payer.key === meKey && debtor.key === partyKey) credit.push(open);
+        else if (payer.key === partyKey && debtor.key === meKey) {
+          debit.push(open);
+        }
+      }
+    }
+
+    const byAge = (a: OpenShare, b: OpenShare) =>
+      a.createdAt.getTime() - b.createdAt.getTime() ||
+      a.id.localeCompare(b.id);
+    credit.sort(byAge);
+    debit.sort(byAge);
+
+    const sum = (list: OpenShare[]) =>
+      list.reduce((acc, s) => acc + s.amount, 0);
+    const offset = Math.min(sum(credit), sum(debit));
+    const balance = sum(credit) - sum(debit);
+    if (offset === 0) return { offsetAmount: 0, balance, settledShares: 0 };
+
+    let settledShares = 0;
+    await this.prisma.$transaction(async (tx) => {
+      for (const side of [credit, debit]) {
+        let budget = offset;
+        for (const share of side) {
+          if (budget === 0) break;
+          if (share.amount <= budget) {
+            await tx.expenseShare.update({
+              where: { id: share.id },
+              data: { isPaid: true },
+            });
+            budget -= share.amount;
+            settledShares += 1;
+          } else {
+            await tx.expenseShare.update({
+              where: { id: share.id },
+              data: { amount: share.amount - budget },
+            });
+            await tx.expenseShare.create({
+              data: {
+                amount: budget,
+                isPaid: true,
+                expenseId: share.expenseId,
+                userId: share.userId,
+                contactId: share.contactId,
+              },
+            });
+            budget = 0;
+            settledShares += 1;
+          }
+        }
+      }
+    });
+
+    return { offsetAmount: offset, balance, settledShares };
   }
 }

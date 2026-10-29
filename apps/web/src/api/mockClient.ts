@@ -13,6 +13,7 @@ import type {
   CreateExpenseInput,
   Expense,
   Me,
+  NetResult,
   PhoneLinkResult,
   Share,
 } from './types';
@@ -322,6 +323,62 @@ export class MockApiClient implements ApiClient {
     return [...totals.values()]
       .filter((b) => b.balance !== 0)
       .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
+  }
+
+  /** Mirrors the server's netting: both directions cancel up to the smaller total. */
+  async netWithCounterparty(partyKey: string): Promise<NetResult> {
+    const meKey = userPartyKey(ME_ID);
+    const credit: { expense: Expense; share: Share }[] = [];
+    const debit: { expense: Expense; share: Share }[] = [];
+    for (const e of this.expenses) {
+      const pKey = payerPartyKey(e);
+      if (!pKey) continue;
+      for (const s of e.shares) {
+        if (s.isPaid) continue;
+        const dKey = sharePartyKey(s);
+        if (!dKey || dKey === pKey) continue;
+        if (pKey === meKey && dKey === partyKey) credit.push({ expense: e, share: s });
+        else if (pKey === partyKey && dKey === meKey) debit.push({ expense: e, share: s });
+      }
+    }
+    const byAge = (
+      a: { share: Share },
+      b: { share: Share },
+    ) =>
+      a.share.createdAt.localeCompare(b.share.createdAt) ||
+      a.share.id.localeCompare(b.share.id);
+    credit.sort(byAge);
+    debit.sort(byAge);
+    const sum = (list: { share: Share }[]) =>
+      list.reduce((acc, x) => acc + x.share.amount, 0);
+    const offset = Math.min(sum(credit), sum(debit));
+    const balance = sum(credit) - sum(debit);
+    if (offset === 0) return { offsetAmount: 0, balance, settledShares: 0 };
+
+    let settledShares = 0;
+    for (const side of [credit, debit]) {
+      let budget = offset;
+      for (const { expense, share } of side) {
+        if (budget === 0) break;
+        if (share.amount <= budget) {
+          share.isPaid = true;
+          budget -= share.amount;
+          settledShares += 1;
+        } else {
+          const piece: Share = {
+            ...share,
+            id: nextId('share'),
+            amount: budget,
+            isPaid: true,
+          };
+          share.amount -= budget;
+          expense.shares.push(piece);
+          budget = 0;
+          settledShares += 1;
+        }
+      }
+    }
+    return { offsetAmount: offset, balance, settledShares };
   }
 
   async settleShare(shareId: string): Promise<void> {

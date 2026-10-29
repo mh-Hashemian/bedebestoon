@@ -1,8 +1,10 @@
-import { useState } from 'react';
-import { List, Modal, Section, Text } from '@telegram-apps/telegram-ui';
+import { useEffect, useRef, useState } from 'react';
+import { Button, List, Modal, Section, Text } from '@telegram-apps/telegram-ui';
 import type { Balance, Expense } from '../api/types';
+import { friendlyError } from '../api/client';
 import { formatDateFa, formatSignedToman, formatToman } from '../lib/format';
 import { GREEN, RED } from '../lib/theme';
+import { hapticError, hapticSuccess } from '../telegram/actions';
 import {
   payerDisplayName,
   payerPartyKey,
@@ -103,7 +105,26 @@ export function PersonDetailModal({
     expenseId: string;
     message: string;
   } | null>(null);
+  const [netArmed, setNetArmed] = useState(false);
+  const [netBusy, setNetBusy] = useState(false);
+  const [netNote, setNetNote] = useState<string | null>(null);
+  const [netError, setNetError] = useState<string | null>(null);
+  const netTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const myKey = me ? userPartyKey(me.id) : null;
+
+  // Fresh netting state whenever another person's account is opened.
+  useEffect(() => {
+    setNetArmed(false);
+    setNetNote(null);
+    setNetError(null);
+  }, [balance?.key]);
+
+  useEffect(
+    () => () => {
+      if (netTimer.current) clearTimeout(netTimer.current);
+    },
+    [],
+  );
 
   const openShares: { expense: Expense; share: Expense['shares'][number] }[] =
     [];
@@ -137,6 +158,49 @@ export function PersonDetailModal({
     }
   }
 
+  // «کم و وجه» preview: how much of the two directions cancels each other.
+  let creditTotal = 0; // the counterparty owes me
+  let debitTotal = 0; // I owe the counterparty
+  if (myKey) {
+    for (const { expense, share } of openShares) {
+      if (payerPartyKey(expense) === myKey) creditTotal += share.amount;
+      else debitTotal += share.amount;
+    }
+  }
+  const offsetPreview = Math.min(creditTotal, debitTotal);
+
+  const onNet = async () => {
+    if (!balance) return;
+    // Two-step like the other consequential actions: first tap arms it.
+    if (!netArmed) {
+      setNetArmed(true);
+      if (netTimer.current) clearTimeout(netTimer.current);
+      netTimer.current = setTimeout(() => setNetArmed(false), 4000);
+      return;
+    }
+    setNetBusy(true);
+    setNetError(null);
+    try {
+      const res = await api.netWithCounterparty(balance.key);
+      hapticSuccess();
+      if (res.balance === 0) {
+        // Fully settled: the person leaves the balances list entirely.
+        onClose();
+        return;
+      }
+      setNetNote(
+        `✓ ${formatToman(res.offsetAmount)} از هر دو طرف خط خورد؛ فقط خالص حساب موند.`,
+      );
+      void refresh().catch(() => {});
+    } catch (err) {
+      hapticError();
+      setNetError(friendlyError(err));
+    } finally {
+      setNetBusy(false);
+      setNetArmed(false);
+    }
+  };
+
   return (
     <Modal
       open={!!balance}
@@ -166,6 +230,57 @@ export function PersonDetailModal({
               خالص: {formatSignedToman(balance.balance)}
             </div>
           </div>
+          {offsetPreview > 0 && (
+            <div style={{ padding: '14px 16px 0' }}>
+              <Button
+                size="l"
+                stretched
+                mode="bezeled"
+                loading={netBusy}
+                onClick={() => void onNet()}
+                style={
+                  netArmed ? { background: GREEN, color: '#fff' } : undefined
+                }
+              >
+                {netArmed ? 'برای کم و وجه، دوباره بزن' : 'کم و وجه'}
+              </Button>
+              <div
+                style={{
+                  fontSize: 13,
+                  opacity: 0.7,
+                  marginTop: 8,
+                  textAlign: 'center',
+                }}
+              >
+                {formatToman(offsetPreview)} از بدهی‌های دوطرفه خط می‌خوره و
+                فقط خالص حساب می‌مونه.
+              </div>
+              {netError && (
+                <div
+                  style={{
+                    color: RED,
+                    fontSize: 13,
+                    marginTop: 6,
+                    textAlign: 'center',
+                  }}
+                >
+                  {netError}
+                </div>
+              )}
+            </div>
+          )}
+          {netNote && (
+            <div
+              style={{
+                padding: '12px 20px 0',
+                color: GREEN,
+                fontSize: 14,
+                fontWeight: 600,
+              }}
+            >
+              {netNote}
+            </div>
+          )}
           <List>
             <Section header="سهم‌های تسویه‌نشده">
               {openShares.length === 0 && (

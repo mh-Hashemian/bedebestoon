@@ -70,6 +70,16 @@ export interface PhoneLinkResult {
   linkedCount: number;
 }
 
+/** Result of «کم و وجه» (netting) with one counterparty. */
+export interface NetResult {
+  /** Amount crossed out on EACH side (both sides lose exactly this much). */
+  offsetAmount: number;
+  /** Net balance after netting (netting never changes it). Positive: they owe me. */
+  balance: number;
+  /** Shares marked settled, including pieces created by splitting. */
+  settledShares: number;
+}
+
 export interface ParticipantInput {
   userId?: string;
   contactId?: string;
