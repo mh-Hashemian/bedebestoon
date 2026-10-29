@@ -50,8 +50,15 @@ export function ExpenseDetailModal({
               مبلغ کل: {formatToman(expense.totalAmount)}
             </div>
           </div>
+          <List>
+            <Section header="سهم‌ها">
+              {expense.shares.map((share) => (
+                <ShareRow key={share.id} expense={expense} share={share} />
+              ))}
+            </Section>
+          </List>
           {expense.createdById === me.id && (
-            <div style={{ padding: '12px 16px 0' }}>
+            <div style={{ padding: '6px 16px 0' }}>
               <DeleteButton
                 key={expense.id}
                 label="🗑 حذف این خرج"
@@ -76,13 +83,6 @@ export function ExpenseDetailModal({
               )}
             </div>
           )}
-          <List>
-            <Section header="سهم‌ها">
-              {expense.shares.map((share) => (
-                <ShareRow key={share.id} expense={expense} share={share} />
-              ))}
-            </Section>
-          </List>
         </div>
       )}
     </Modal>
@@ -101,10 +101,6 @@ export function PersonDetailModal({
   onClose: () => void;
 }) {
   const { me, expenses, api, refresh } = useAppState();
-  const [delError, setDelError] = useState<{
-    expenseId: string;
-    message: string;
-  } | null>(null);
   const [netArmed, setNetArmed] = useState(false);
   const [netBusy, setNetBusy] = useState(false);
   const [netNote, setNetNote] = useState<string | null>(null);
@@ -139,22 +135,6 @@ export function PersonDetailModal({
           (dKey === myKey && pKey === balance.key);
         if (betweenUs) openShares.push({ expense, share });
       }
-    }
-  }
-
-  // Group the open shares by their expense so each expense gets one header
-  // line (and, for expenses I created, its own delete action).
-  const groups: { expense: Expense; shares: Expense['shares'] }[] = [];
-  {
-    const byId = new Map<string, { expense: Expense; shares: Expense['shares'] }>();
-    for (const { expense, share } of openShares) {
-      let g = byId.get(expense.id);
-      if (!g) {
-        g = { expense, shares: [] };
-        byId.set(expense.id, g);
-        groups.push(g);
-      }
-      g.shares.push(share);
     }
   }
 
@@ -288,37 +268,14 @@ export function PersonDetailModal({
                   سهم بازِ مشترکی پیدا نشد.
                 </div>
               )}
-              {groups.map(({ expense, shares }) => (
-                <div key={expense.id}>
+              {openShares.map(({ expense, share }) => (
+                <div key={share.id}>
                   <div
                     style={{ padding: '10px 20px 0', opacity: 0.65, fontSize: 13 }}
                   >
                     {expense.title} · {formatDateFa(expense.createdAt)}
                   </div>
-                  {shares.map((share) => (
-                    <ShareRow key={share.id} expense={expense} share={share} />
-                  ))}
-                  {me && expense.createdById === me.id && (
-                    <div style={{ padding: '4px 20px 2px' }}>
-                      <DeleteButton
-                        key={expense.id}
-                        variant="inline"
-                        label="🗑 حذف کامل این مورد"
-                        onDelete={async () => {
-                          await api.deleteExpense(expense.id);
-                          void refresh().catch(() => {});
-                        }}
-                        onError={(message) =>
-                          setDelError({ expenseId: expense.id, message })
-                        }
-                      />
-                      {delError?.expenseId === expense.id && (
-                        <div style={{ color: RED, fontSize: 12, marginTop: 4 }}>
-                          {delError.message}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <ShareRow expense={expense} share={share} />
                 </div>
               ))}
             </Section>

@@ -30,7 +30,7 @@ import {
 } from '../lib/theme';
 import { ExpenseDetailModal, PersonDetailModal } from '../components/Details';
 import { PhonePrompt } from '../components/PhonePrompt';
-import { AvatarStack, DeleteButton, InitialAvatar } from '../components/ui';
+import { AvatarStack, InitialAvatar } from '../components/ui';
 import { useAppState } from '../state/AppState';
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
@@ -51,8 +51,7 @@ function TransactionCard({
   expense: Expense;
   onOpen: () => void;
 }) {
-  const { me, api, refresh } = useAppState();
-  const [delError, setDelError] = useState<string | null>(null);
+  const { me } = useAppState();
   if (!me) return null;
   const visual = categoryVisual(expense.title);
   const net = myNetForExpense(expense, me.id);
@@ -117,24 +116,6 @@ function TransactionCard({
           {formatDateTimeFa(expense.createdAt)}
         </div>
         <div style={{ fontSize: 14, opacity: 0.35, marginTop: 2 }}>›</div>
-        {expense.createdById === me.id && (
-          <div style={{ marginTop: 8 }}>
-            <DeleteButton
-              variant="inline"
-              label="حذف"
-              onDelete={async () => {
-                await api.deleteExpense(expense.id);
-                void refresh().catch(() => {});
-              }}
-              onError={setDelError}
-            />
-            {delError && (
-              <div style={{ color: RED, fontSize: 11, marginTop: 4, maxWidth: 96 }}>
-                {delError}
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
