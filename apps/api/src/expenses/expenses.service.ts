@@ -3,8 +3,11 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { Contact, User } from '@prisma/client';
+import { formatTomanFa } from '../common/fa-format';
+import { TelegramNotifyService } from '../notifications/telegram-notify.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateExpenseDto, ParticipantDto } from './dto/create-expense.dto';
 import { equalSplit, isValidCustomSplit } from './split.util';
@@ -41,7 +44,12 @@ function partyKeyOfContact(contact: ContactLite): string {
 
 @Injectable()
 export class ExpensesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Optional so unit specs can construct the service with Prisma alone;
+    // Nest injects it in the app. Notifications are fire-and-forget.
+    @Optional() private readonly notify?: TelegramNotifyService,
+  ) {}
 
   /**
    * Create a group expense and its shares atomically (HANDOVER §4.3).
@@ -119,8 +127,8 @@ export class ExpensesService {
         ? partyKeyOfUser(p.userId)
         : partyKeyOfContact(contactById.get(p.contactId as string) as Contact);
 
-    return this.prisma.$transaction(async (tx) => {
-      return tx.expense.create({
+    const expense = await this.prisma.$transaction(async (tx) =>
+      tx.expense.create({
         data: {
           title: dto.title,
           totalAmount: dto.totalAmount,
@@ -146,8 +154,63 @@ export class ExpensesService {
             },
           },
         },
-      });
-    });
+      }),
+    );
+    this.notifyExpenseCreated(creator, expense);
+    return expense;
+  }
+
+  /**
+   * DM every registered user this expense concerns (except the creator):
+   * debtors hear their share; a payer who is a registered user hears the
+   * expense was recorded with them as payer. Fire-and-forget.
+   */
+  private notifyExpenseCreated(
+    creator: User,
+    expense: {
+      title: string;
+      totalAmount: number;
+      payerId: string | null;
+      payerContact: { linkedUserId: string | null } | null;
+      shares: {
+        amount: number;
+        isPaid: boolean;
+        userId: string | null;
+        contact: { linkedUserId: string | null } | null;
+      }[];
+    },
+  ) {
+    if (!this.notify) return;
+    const notify = this.notify;
+    const actor = [creator.firstName, creator.lastName]
+      .filter(Boolean)
+      .join(' ');
+
+    const owed = new Map<string, number>();
+    for (const s of expense.shares) {
+      if (s.isPaid) continue;
+      const uid = s.userId ?? s.contact?.linkedUserId ?? null;
+      if (!uid || uid === creator.id) continue;
+      owed.set(uid, (owed.get(uid) ?? 0) + s.amount);
+    }
+    for (const [uid, amount] of owed) {
+      void notify.notifyUser(
+        uid,
+        `🧾 ${actor} خرج «${expense.title}» رو ثبت کرد.\n` +
+          `سهم تو: ${formatTomanFa(amount)} تومان\n` +
+          `مبلغ کل: ${formatTomanFa(expense.totalAmount)} تومان`,
+      );
+    }
+
+    const payerUserId =
+      expense.payerId ?? expense.payerContact?.linkedUserId ?? null;
+    if (payerUserId && payerUserId !== creator.id && !owed.has(payerUserId)) {
+      void notify.notifyUser(
+        payerUserId,
+        `🧾 ${actor} خرج «${expense.title}» رو با پرداخت تو ثبت کرد.\n` +
+          `مبلغ کل: ${formatTomanFa(expense.totalAmount)} تومان`,
+      );
+    }
   }
 
   /**
@@ -158,7 +221,15 @@ export class ExpensesService {
   async removeExpense(userId: string, expenseId: string) {
     const expense = await this.prisma.expense.findUnique({
       where: { id: expenseId },
-      select: { id: true, createdById: true },
+      include: {
+        payerContact: { select: { linkedUserId: true } },
+        shares: {
+          select: {
+            userId: true,
+            contact: { select: { linkedUserId: true } },
+          },
+        },
+      },
     });
     if (!expense) throw new NotFoundException('Expense not found');
     if (expense.createdById !== userId) {
@@ -167,6 +238,27 @@ export class ExpensesService {
       );
     }
     await this.prisma.expense.delete({ where: { id: expenseId } });
+
+    // Tell the other registered users involved that the record is gone.
+    if (this.notify) {
+      const notify = this.notify;
+      const actor = await notify.nameOf(userId);
+      const recipients = new Set<string>();
+      const payerUserId =
+        expense.payerId ?? expense.payerContact?.linkedUserId ?? null;
+      if (payerUserId) recipients.add(payerUserId);
+      for (const s of expense.shares) {
+        const uid = s.userId ?? s.contact?.linkedUserId ?? null;
+        if (uid) recipients.add(uid);
+      }
+      recipients.delete(userId);
+      for (const uid of recipients) {
+        void notify.notifyUser(
+          uid,
+          `🗑 ${actor} خرج «${expense.title}» (${formatTomanFa(expense.totalAmount)} تومان) رو حذف کرد.`,
+        );
+      }
+    }
   }
 
   /** Newest-first list of expenses the user is involved in, with shares. */

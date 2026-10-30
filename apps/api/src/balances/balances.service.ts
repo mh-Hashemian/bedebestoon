@@ -3,11 +3,14 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { formatTomanFa } from '../common/fa-format';
 import {
   CONTACT_PUBLIC_SELECT,
   USER_PUBLIC_SELECT,
 } from '../expenses/expenses.service';
+import { TelegramNotifyService } from '../notifications/telegram-notify.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface CounterpartyBalance {
@@ -64,7 +67,12 @@ function partyFromContact(c: {
 
 @Injectable()
 export class BalancesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Optional so unit specs can construct the service with Prisma alone;
+    // Nest injects it in the app. Notifications are fire-and-forget.
+    @Optional() private readonly notify?: TelegramNotifyService,
+  ) {}
 
   /**
    * Addendum v1.1 — per-counterparty net balance for the current user,
@@ -179,10 +187,12 @@ export class BalancesService {
     }
 
     if (share.isPaid) return share; // idempotent
-    return this.prisma.expenseShare.update({
+    const updated = await this.prisma.expenseShare.update({
       where: { id: shareId },
       data: { isPaid: true },
     });
+    void this.notifyShareParties(userId, share, share.expense, 'settle');
+    return updated;
   }
 
   /**
@@ -217,10 +227,94 @@ export class BalancesService {
     }
 
     if (!share.isPaid) return share; // idempotent
-    return this.prisma.expenseShare.update({
+    const updated = await this.prisma.expenseShare.update({
       where: { id: shareId },
       data: { isPaid: false },
     });
+    void this.notifyShareParties(userId, share, share.expense, 'unsettle');
+    return updated;
+  }
+
+  /**
+   * DM the parties of a share (payer and debtor, except the actor) that
+   * it was settled or re-opened. Fire-and-forget; never throws.
+   */
+  private async notifyShareParties(
+    actorId: string,
+    share: {
+      amount: number;
+      userId: string | null;
+      contact?: { linkedUserId: string | null } | null;
+    },
+    expense: {
+      title: string;
+      payerId: string | null;
+      payerContact?: { linkedUserId: string | null } | null;
+    },
+    kind: 'settle' | 'unsettle',
+  ) {
+    if (!this.notify) return;
+    const notify = this.notify;
+    try {
+      const payerUserId =
+        expense.payerId ?? expense.payerContact?.linkedUserId ?? null;
+      const debtorUserId =
+        share.userId ?? share.contact?.linkedUserId ?? null;
+      const recipients = [payerUserId, debtorUserId].filter(
+        (x): x is string => !!x && x !== actorId,
+      );
+      if (recipients.length === 0) return;
+      const actor = await notify.nameOf(actorId);
+      const amount = formatTomanFa(share.amount);
+      for (const uid of recipients) {
+        const text =
+          kind === 'settle'
+            ? uid === debtorUserId
+              ? `✅ ${actor} سهم تو از «${expense.title}» رو تسویه‌شده زد (${amount} تومان).`
+              : `✅ ${actor} سهم «${expense.title}» (${amount} تومان) رو تسویه کرد.`
+            : `↩️ ${actor} تسویه‌ی سهم «${expense.title}» (${amount} تومان) رو برگردوند؛ این سهم دوباره بازه.`;
+        void notify.notifyUser(uid, text);
+      }
+    } catch {
+      // notifications are best-effort only
+    }
+  }
+
+  /** DM the counterparty that netting crossed out part of the account. */
+  private async notifyNetResult(
+    actorId: string,
+    partyKey: string,
+    offset: number,
+    balance: number,
+  ) {
+    if (!this.notify) return;
+    const notify = this.notify;
+    try {
+      let recipientId: string | null = null;
+      if (partyKey.startsWith('user:')) {
+        recipientId = partyKey.slice('user:'.length);
+      } else {
+        const contact = await this.prisma.contact.findUnique({
+          where: { id: partyKey.slice('contact:'.length) },
+          select: { linkedUserId: true },
+        });
+        recipientId = contact?.linkedUserId ?? null;
+      }
+      if (!recipientId || recipientId === actorId) return;
+      const actor = await notify.nameOf(actorId);
+      const balanceLine =
+        balance === 0
+          ? 'حسابتون کاملاً صاف شد. ✅'
+          : balance > 0
+            ? `خالص حسابتون: ${formatTomanFa(balance)} تومان به ${actor} بدهکاری.`
+            : `خالص حسابتون: ${actor} ${formatTomanFa(-balance)} تومان بهت بدهکاره.`;
+      void notify.notifyUser(
+        recipientId,
+        `⚖️ ${actor} با «کم و وجه» ${formatTomanFa(offset)} تومان از بدهی‌های دوطرفه‌تون رو خط زد.\n${balanceLine}`,
+      );
+    } catch {
+      // notifications are best-effort only
+    }
   }
 
   /**
@@ -358,6 +452,9 @@ export class BalancesService {
       }
     });
 
+    if (offset > 0) {
+      void this.notifyNetResult(userId, partyKey, offset, balance);
+    }
     return { offsetAmount: offset, balance, settledShares };
   }
 }

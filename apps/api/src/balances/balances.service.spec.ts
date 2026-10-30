@@ -282,3 +282,156 @@ describe('BalancesService netWithCounterparty', () => {
     ).rejects.toThrow('partyKey');
   });
 });
+
+/**
+ * Notification hooks: settle and netting DM the other side via the
+ * (optional) TelegramNotifyService. Fire-and-forget — flush microtasks
+ * before asserting.
+ */
+describe('BalancesService notifications', () => {
+  const flush = async () => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  function fakeNotify() {
+    return {
+      notifyUser: jest.fn().mockResolvedValue(undefined),
+      nameOf: jest.fn().mockResolvedValue('یزدانی'),
+    };
+  }
+
+  it('settle: the payer is notified when the debtor settles', async () => {
+    const notify = fakeNotify();
+    const share = {
+      id: 's1',
+      amount: 50000,
+      isPaid: false,
+      userId: 'u1',
+      contact: null,
+      expense: {
+        title: 'ناهار',
+        payerId: 'u2',
+        createdById: 'u2',
+        payerContact: null,
+      },
+    };
+    const prismaMock = {
+      expenseShare: {
+        findUnique: jest.fn().mockResolvedValue(share),
+        update: jest
+          .fn()
+          .mockResolvedValue({ ...share, isPaid: true }),
+      },
+    };
+    const service = new BalancesService(
+      prismaMock as never,
+      notify as never,
+    );
+    await service.settleShare('u1', 's1');
+    await flush();
+    expect(notify.notifyUser).toHaveBeenCalledTimes(1);
+    expect(notify.notifyUser).toHaveBeenCalledWith(
+      'u2',
+      expect.stringContaining('ناهار'),
+    );
+  });
+
+  it('settle: nobody is notified for an idempotent no-op', async () => {
+    const notify = fakeNotify();
+    const share = {
+      id: 's1',
+      amount: 50000,
+      isPaid: true,
+      userId: 'u1',
+      contact: null,
+      expense: {
+        title: 'ناهار',
+        payerId: 'u2',
+        createdById: 'u2',
+        payerContact: null,
+      },
+    };
+    const prismaMock = {
+      expenseShare: {
+        findUnique: jest.fn().mockResolvedValue(share),
+        update: jest.fn(),
+      },
+    };
+    const service = new BalancesService(
+      prismaMock as never,
+      notify as never,
+    );
+    await service.settleShare('u1', 's1');
+    await flush();
+    expect(notify.notifyUser).not.toHaveBeenCalled();
+  });
+
+  it('netting: the counterparty is notified with the crossed-out amount', async () => {
+    const notify = fakeNotify();
+    const T = (day: number) => new Date(2026, 0, day);
+    const expenses = [
+      {
+        id: 'e1',
+        payerId: 'u1',
+        payer: { id: 'u1', firstName: 'P' },
+        payerContactId: null,
+        payerContact: null,
+        shares: [
+          {
+            id: 's1',
+            amount: 100,
+            isPaid: false,
+            userId: 'u2',
+            contactId: null,
+            createdAt: T(1),
+            user: { id: 'u2', firstName: 'U' },
+            contact: null,
+          },
+        ],
+      },
+      {
+        id: 'e2',
+        payerId: 'u2',
+        payer: { id: 'u2', firstName: 'P' },
+        payerContactId: null,
+        payerContact: null,
+        shares: [
+          {
+            id: 's2',
+            amount: 60,
+            isPaid: false,
+            userId: 'u1',
+            contactId: null,
+            createdAt: T(2),
+            user: { id: 'u1', firstName: 'U' },
+            contact: null,
+          },
+        ],
+      },
+    ];
+    const txMock = {
+      expenseShare: {
+        update: jest.fn().mockResolvedValue({}),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const prismaMock = {
+      expense: { findMany: jest.fn().mockResolvedValue(expenses) },
+      $transaction: jest.fn(async (fn: (tx: unknown) => unknown) =>
+        fn(txMock),
+      ),
+    };
+    const service = new BalancesService(
+      prismaMock as never,
+      notify as never,
+    );
+    await service.netWithCounterparty('u1', 'user:u2');
+    await flush();
+    expect(notify.notifyUser).toHaveBeenCalledTimes(1);
+    expect(notify.notifyUser).toHaveBeenCalledWith(
+      'u2',
+      expect.stringContaining('کم و وجه'),
+    );
+  });
+});
