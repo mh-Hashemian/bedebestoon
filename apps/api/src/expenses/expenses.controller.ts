@@ -12,6 +12,7 @@ import { User } from '@prisma/client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { TelegramAuthGuard } from '../auth/telegram-auth.guard';
 import { CreateExpenseDto } from './dto/create-expense.dto';
+import { CreateGroupExpenseDto } from './dto/create-group-expense.dto';
 import { ExpensesService } from './expenses.service';
 
 @Controller('expenses')
@@ -22,6 +23,15 @@ export class ExpensesController {
   @Post()
   create(@CurrentUser() user: User, @Body() dto: CreateExpenseDto) {
     return this.expenses.createExpense(user, dto);
+  }
+
+  /** Multi-payer group expense («چندپرداخت‌کننده»): one form, several payers. */
+  @Post('group')
+  createGroup(
+    @CurrentUser() user: User,
+    @Body() dto: CreateGroupExpenseDto,
+  ) {
+    return this.expenses.createGroupExpense(user, dto);
   }
 
   @Get()

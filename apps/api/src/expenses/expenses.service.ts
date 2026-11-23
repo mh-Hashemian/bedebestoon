@@ -6,10 +6,12 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Contact, User } from '@prisma/client';
+import { computeSettlePlan } from '../balances/settle-plan.util';
 import { formatTomanFa } from '../common/fa-format';
 import { TelegramNotifyService } from '../notifications/telegram-notify.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateExpenseDto, ParticipantDto } from './dto/create-expense.dto';
+import { CreateGroupExpenseDto } from './dto/create-group-expense.dto';
 import { equalSplit, isValidCustomSplit } from './split.util';
 
 /** Fields of a user that are safe to expose in API responses (no BigInt). */
@@ -158,6 +160,190 @@ export class ExpensesService {
     );
     this.notifyExpenseCreated(creator, expense);
     return expense;
+  }
+
+  /**
+   * Multi-payer group expense («چندپرداخت‌کننده»): the Splitwise / Settle
+   * Up form — each participant says how much THEY paid; the total is the
+   * sum, split equally among all participants.
+   *
+   * Stored as one expense per payer (the Tricount model, automated) inside
+   * a single transaction, so the share/balance model is untouched. The
+   * per-person nets are exactly paid − share, so the returned plan is the
+   * same minimum-transaction plan a one-record multi-payer expense would
+   * give. Returns the created expenses plus that plan for the trip.
+   */
+  async createGroupExpense(creator: User, dto: CreateGroupExpenseDto) {
+    const participants = dto.participants;
+    const payers = dto.payers;
+
+    if (payers.length < 2) {
+      throw new BadRequestException(
+        'At least two payers are required for a multi-payer expense',
+      );
+    }
+
+    const checkIdentity = (p: { userId?: string; contactId?: string }) => {
+      const kinds = [p.userId, p.contactId].filter(Boolean).length;
+      if (kinds !== 1) {
+        throw new BadRequestException(
+          'Each person must reference exactly one of userId or contactId',
+        );
+      }
+      if (p.userId && p.userId !== creator.id) {
+        throw new BadRequestException(
+          'In this phase a userId can only be yourself; add other people as contacts',
+        );
+      }
+    };
+    for (const p of participants) checkIdentity(p);
+    for (const p of payers) checkIdentity(p);
+
+    // Resolve every referenced contact and make sure the creator owns them.
+    const referencedIds = new Set<string>();
+    for (const p of participants) if (p.contactId) referencedIds.add(p.contactId);
+    for (const p of payers) if (p.contactId) referencedIds.add(p.contactId);
+
+    const contacts = await this.prisma.contact.findMany({
+      where: { id: { in: [...referencedIds] }, ownerId: creator.id },
+    });
+    if (contacts.length !== referencedIds.size) {
+      throw new BadRequestException(
+        'One or more referenced contacts do not exist in your contact list',
+      );
+    }
+    const contactById = new Map<string, Contact>(
+      contacts.map((c) => [c.id, c]),
+    );
+
+    const holderKey = (p: { userId?: string; contactId?: string }): string =>
+      p.userId
+        ? partyKeyOfUser(p.userId)
+        : partyKeyOfContact(contactById.get(p.contactId as string) as Contact);
+
+    // Every payer must be one of the participants.
+    const participantKeys = new Set(participants.map(holderKey));
+    for (const p of payers) {
+      if (!participantKeys.has(holderKey(p))) {
+        throw new BadRequestException(
+          'Each payer must be one of the participants',
+        );
+      }
+    }
+
+    const totalAmount = payers.reduce((sum, p) => sum + p.amount, 0);
+
+    // One sub-expense per payer, equal split among all participants.
+    const subExpenses = payers.map((payer) => ({
+      payer,
+      payerKey: holderKey(payer),
+      amounts: equalSplit(payer.amount, participants.length),
+    }));
+
+    const created = await this.prisma.$transaction((tx) =>
+      Promise.all(
+        subExpenses.map((sub) =>
+          tx.expense.create({
+            data: {
+              title: dto.title,
+              totalAmount: sub.payer.amount,
+              payerId: sub.payer.userId ?? null,
+              payerContactId: sub.payer.contactId ?? null,
+              createdById: creator.id,
+              shares: {
+                create: participants.map((p, i) => ({
+                  amount: sub.amounts[i],
+                  userId: p.userId ?? null,
+                  contactId: p.contactId ?? null,
+                  isPaid: holderKey(p) === sub.payerKey,
+                })),
+              },
+            },
+            include: {
+              payer: { select: USER_PUBLIC_SELECT },
+              payerContact: { select: CONTACT_PUBLIC_SELECT },
+              shares: {
+                include: {
+                  user: { select: USER_PUBLIC_SELECT },
+                  contact: { select: CONTACT_PUBLIC_SELECT },
+                },
+              },
+            },
+          }),
+        ),
+      ),
+    );
+
+    // Nets for the trip plan: paid − share per party (they sum to zero).
+    const paidByKey = new Map<string, number>();
+    const shareByKey = new Map<string, number>();
+    for (const sub of subExpenses) {
+      paidByKey.set(
+        sub.payerKey,
+        (paidByKey.get(sub.payerKey) ?? 0) + sub.payer.amount,
+      );
+      participants.forEach((p, i) => {
+        const key = holderKey(p);
+        shareByKey.set(key, (shareByKey.get(key) ?? 0) + sub.amounts[i]);
+      });
+    }
+    const parties = [...participantKeys]
+      .map((key) => ({
+        key,
+        balance: (paidByKey.get(key) ?? 0) - (shareByKey.get(key) ?? 0),
+      }))
+      .sort((a, b) => b.balance - a.balance);
+    const transfers = computeSettlePlan(parties);
+    const plan = {
+      transfers,
+      parties,
+      totalAmount: transfers.reduce((sum, t) => sum + t.amount, 0),
+    };
+
+    this.notifyGroupExpenseCreated(
+      creator,
+      dto.title,
+      totalAmount,
+      paidByKey,
+      shareByKey,
+    );
+    return { expenses: created, plan };
+  }
+
+  /**
+   * One summary DM per registered participant (except the creator): their
+   * share of the trip total and what they paid. Fire-and-forget.
+   */
+  private notifyGroupExpenseCreated(
+    creator: User,
+    title: string,
+    totalAmount: number,
+    paidByKey: Map<string, number>,
+    shareByKey: Map<string, number>,
+  ) {
+    if (!this.notify) return;
+    const notify = this.notify;
+    const actor = [creator.firstName, creator.lastName]
+      .filter(Boolean)
+      .join(' ');
+    for (const [key, share] of shareByKey) {
+      // Linked contacts resolve to a user key; unlinked contacts have no
+      // Telegram user to notify, and the creator is skipped.
+      if (!key.startsWith('user:')) continue;
+      const userId = key.slice('user:'.length);
+      if (userId === creator.id) continue;
+      const paid = paidByKey.get(key) ?? 0;
+      const paidLine =
+        paid > 0
+          ? `\nتو ${formatTomanFa(paid)} تومان پرداخت کردی.`
+          : '';
+      void notify.notifyUser(
+        userId,
+        `🧾 ${actor} خرج گروهی «${title}» رو ثبت کرد (چند نفر پرداخت کردن).\n` +
+          `مبلغ کل: ${formatTomanFa(totalAmount)} تومان\n` +
+          `سهم تو: ${formatTomanFa(share)} تومان${paidLine}`,
+      );
+    }
   }
 
   /**

@@ -29,7 +29,6 @@ import {
   RED_TINT,
 } from '../lib/theme';
 import { ExpenseDetailModal, PersonDetailModal } from '../components/Details';
-import { GroupSettleModal } from '../components/GroupSettle';
 import { PhonePrompt } from '../components/PhonePrompt';
 import { AvatarStack, InitialAvatar } from '../components/ui';
 import { useAppState } from '../state/AppState';
@@ -132,7 +131,6 @@ export function Dashboard({
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
   const [selectedBalance, setSelectedBalance] = useState<Balance | null>(null);
   const [settleOpen, setSettleOpen] = useState(false);
-  const [groupSettleOpen, setGroupSettleOpen] = useState(false);
 
   const totals = useMemo(() => {
     let owedToMe = 0;
@@ -375,33 +373,6 @@ export function Dashboard({
         header={<Modal.Header>تسویه حساب</Modal.Header>}
       >
         <div style={{ padding: '4px 16px 28px', display: 'grid', gap: 10 }}>
-          {/* Group settlement: the fewest transfers for a whole trip/group. */}
-          <div
-            onClick={() => {
-              setSettleOpen(false);
-              setGroupSettleOpen(true);
-            }}
-            style={{
-              ...cardStyle,
-              boxShadow: 'none',
-              border: '1px solid rgba(120,140,170,0.18)',
-              background: GREEN_TINT,
-              padding: '12px 16px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              cursor: 'pointer',
-            }}
-          >
-            <span style={{ fontSize: 22 }}>🧮</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 800 }}>تسویه گروهی</div>
-              <div style={{ fontSize: 13, opacity: 0.65 }}>
-                با کمترین تراکنش، همه رو صاف کن
-              </div>
-            </div>
-            <span style={{ fontSize: 18, opacity: 0.4 }}>›</span>
-          </div>
           {balances.length === 0 && (
             <Text>حساب بازی برای تسویه نداری. 🎉</Text>
           )}
@@ -442,10 +413,6 @@ export function Dashboard({
       <PersonDetailModal
         balance={liveBalance}
         onClose={() => setSelectedBalance(null)}
-      />
-      <GroupSettleModal
-        open={groupSettleOpen}
-        onClose={() => setGroupSettleOpen(false)}
       />
     </div>
   );

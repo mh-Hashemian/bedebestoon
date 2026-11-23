@@ -12,6 +12,8 @@ import type {
   Contact,
   CreateContactInput,
   CreateExpenseInput,
+  CreateGroupExpenseInput,
+  CreateGroupExpenseResult,
   Expense,
   Me,
   NetResult,
@@ -299,6 +301,77 @@ export class MockApiClient implements ApiClient {
     };
     this.expenses.unshift(expense);
     return expense;
+  }
+
+  /**
+   * Mirrors POST /expenses/group: one expense per payer (equal split),
+   * then the trip's settlement plan from the new shares' nets.
+   */
+  async createGroupExpense(
+    input: CreateGroupExpenseInput,
+  ): Promise<CreateGroupExpenseResult> {
+    const { participants, payers } = input;
+    if (participants.length < 2) {
+      throw new ApiError(400, 'At least two participants are required');
+    }
+    if (payers.length < 2) {
+      throw new ApiError(400, 'At least two payers are required');
+    }
+    const participantKeys = new Set(
+      participants.map((p) =>
+        p.userId
+          ? userPartyKey(p.userId)
+          : contactPartyKey(this.contactById(p.contactId as string)),
+      ),
+    );
+    for (const payer of payers) {
+      const key = payer.userId
+        ? userPartyKey(payer.userId)
+        : contactPartyKey(this.contactById(payer.contactId as string));
+      if (!participantKeys.has(key)) {
+        throw new ApiError(
+          400,
+          'Each payer must be one of the participants',
+        );
+      }
+    }
+
+    const created: Expense[] = [];
+    for (const payer of payers) {
+      const expense = await this.createExpense({
+        title: input.title,
+        totalAmount: payer.amount,
+        payerContactId: payer.contactId,
+        participants: participants.map((p) => ({ ...p })),
+      });
+      created.push(expense);
+    }
+
+    // Nets from the new shares only: paid − share per party.
+    const nets = new Map<string, number>();
+    for (const expense of created) {
+      const pKey = payerPartyKey(expense);
+      if (!pKey) continue;
+      for (const s of expense.shares) {
+        if (s.isPaid) continue;
+        const dKey = sharePartyKey(s);
+        if (!dKey || dKey === pKey) continue;
+        nets.set(pKey, (nets.get(pKey) ?? 0) + s.amount);
+        nets.set(dKey, (nets.get(dKey) ?? 0) - s.amount);
+      }
+    }
+    const parties = [...participantKeys]
+      .map((key) => ({ key, balance: nets.get(key) ?? 0 }))
+      .sort((a, b) => b.balance - a.balance);
+    const transfers = computeSettlePlan(parties);
+    return {
+      expenses: created,
+      plan: {
+        transfers,
+        parties,
+        totalAmount: transfers.reduce((sum, t) => sum + t.amount, 0),
+      },
+    };
   }
 
   async getBalances(): Promise<Balance[]> {

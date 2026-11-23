@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Modal, Text } from '@telegram-apps/telegram-ui';
 import { friendlyError } from '../api/client';
-import type { CreateExpenseInput } from '../api/types';
+import type {
+  CreateExpenseInput,
+  CreateGroupExpenseResult,
+} from '../api/types';
 import {
   formatNumberFa,
   formatPercentFa,
@@ -16,6 +19,7 @@ import {
   cardStyle,
   GREEN,
   GREEN_TINT,
+  RED,
 } from '../lib/theme';
 import { hapticError, hapticSuccess, hapticTap } from '../telegram/actions';
 import {
@@ -114,6 +118,11 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
  * dedicated Custom Split view inside the same sheet. Submission goes
  * through Telegram's MainButton («ثبت و ارسال» / «تایید و ثبت نهایی»),
  * with an in-app fallback button when the MainButton is unavailable.
+ *
+ * Modes: 'expense' (one payer), 'multi' («چندپرداخت‌کننده» — each
+ * participant says how much THEY paid; the total is the sum, split
+ * equally, and the sheet shows the trip's minimum-transaction settlement
+ * plan right after saving), and 'debt' (plain personal debt).
  */
 export function AddExpense({
   open,
@@ -122,13 +131,13 @@ export function AddExpense({
 }: {
   open: boolean;
   onClose: () => void;
-  initialMode?: 'expense' | 'debt';
+  initialMode?: 'expense' | 'debt' | 'multi';
 }) {
   const { api, me, contacts, recentContacts, upsertContact, refresh } =
     useAppState();
 
-  const [view, setView] = useState<'main' | 'custom'>('main');
-  const [mode, setMode] = useState<'expense' | 'debt'>('expense');
+  const [view, setView] = useState<'main' | 'custom' | 'result'>('main');
+  const [mode, setMode] = useState<'expense' | 'debt' | 'multi'>('expense');
   const [debtDirection, setDebtDirection] = useState<'iOwe' | 'theyOwe'>(
     'iOwe',
   );
@@ -142,6 +151,9 @@ export function AddExpense({
   const [query, setQuery] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Multi-payer («چندپرداخت‌کننده»): how much each participant paid.
+  const [paidRaw, setPaidRaw] = useState<Record<string, string>>({});
+  const [result, setResult] = useState<CreateGroupExpenseResult | null>(null);
 
   // Inline contact creation
   const [newName, setNewName] = useState('');
@@ -169,11 +181,27 @@ export function AddExpense({
       setCreateError(null);
       setNewName('');
       setNewPhone('');
+      setPaidRaw({});
+      setResult(null);
     }
   }, [open, initialMode ]);
 
   const nameOf = (key: ParticipantKey): string =>
     key === ME ? 'خودم' : (contacts.find((c) => c.id === key)?.name ?? '؟');
+
+  /** Display name for a settle-plan party key ("user:<id>" / "contact:<id>"). */
+  const nameOfKey = (key: string): string => {
+    if (key.startsWith('user:')) {
+      const id = key.slice('user:'.length);
+      if (me && id === me.id) return 'تو';
+      return contacts.find((c) => c.linkedUserId === id)?.name ?? '؟';
+    }
+    if (key.startsWith('contact:')) {
+      const id = key.slice('contact:'.length);
+      return contacts.find((c) => c.id === id)?.name ?? '؟';
+    }
+    return '؟';
+  };
 
   const customAmountsInOrder = useMemo(
     () => selected.map((k) => parseAmountInput(customRaw[k] ?? '')),
@@ -183,8 +211,27 @@ export function AddExpense({
   const remaining = amount - customSum;
   const customValid =
     mode === 'debt' ||
+    mode === 'multi' ||
     splitMode === 'equal' ||
     isValidCustomSplit(amount, customAmountsInOrder);
+
+  // Multi-payer («چندپرداخت‌کننده»): each participant's paid amount;
+  // the total is the sum, split equally among all participants.
+  const paidAmountsInOrder = useMemo(
+    () => selected.map((k) => parseAmountInput(paidRaw[k] ?? '')),
+    [selected, paidRaw],
+  );
+  const multiTotal = sumAmounts(paidAmountsInOrder);
+  const multiPayerCount = paidAmountsInOrder.filter((a) => a > 0).length;
+  const multiValid =
+    title.trim().length > 0 &&
+    selected.length >= 2 &&
+    multiTotal > 0 &&
+    multiPayerCount >= 2;
+  const multiEqualPreview =
+    multiTotal > 0 && selected.length > 0
+      ? equalSplit(multiTotal, selected.length)
+      : [];
   const debtAutoTitle = debtPerson
     ? debtDirection === 'iOwe'
       ? `بدهی به ${nameOf(debtPerson)}`
@@ -193,7 +240,9 @@ export function AddExpense({
   const formValid =
     mode === 'debt'
       ? amount > 0 && debtPerson !== null
-      : amount > 0 && title.trim().length > 0 && selected.length >= 1;
+      : mode === 'multi'
+        ? multiValid
+        : amount > 0 && title.trim().length > 0 && selected.length >= 1;
 
   const toggleParticipant = (key: ParticipantKey) => {
     hapticTap();
@@ -223,6 +272,34 @@ export function AddExpense({
     setSubmitting(true);
     setError(null);
     try {
+      if (mode === 'multi') {
+        // «چندپرداخت‌کننده»: each participant's paid amount; the server
+        // creates one expense per payer and returns the trip's plan.
+        const participants = selected.map((key) =>
+          key === ME ? { userId: me.id } : { contactId: key },
+        );
+        const payers = selected
+          .map((key, i) => ({
+            key,
+            amount: paidAmountsInOrder[i],
+          }))
+          .filter((p) => p.amount > 0)
+          .map((p) =>
+            p.key === ME
+              ? { userId: me.id, amount: p.amount }
+              : { contactId: p.key, amount: p.amount },
+          );
+        const created = await api.createGroupExpense({
+          title: title.trim(),
+          participants,
+          payers,
+        });
+        hapticSuccess();
+        setResult(created);
+        setView('result');
+        await refresh().catch(() => {});
+        return;
+      }
       if (mode === 'debt' && debtPerson) {
         // A plain personal debt, expressed with the expense model: the
         // lender is the "payer" and the borrower is the only participant,
@@ -268,18 +345,28 @@ export function AddExpense({
     open
       ? {
           text:
-            view === 'custom'
-              ? submitting
-                ? 'در حال ثبت…'
-                : 'تایید و ثبت نهایی'
-              : submitting
-                ? 'در حال ثبت…'
-                : mode === 'debt'
-                  ? 'ثبت بدهی'
-                  : 'ثبت و ارسال',
-          enabled: formValid && customValid,
+            view === 'result'
+              ? 'تمام'
+              : view === 'custom'
+                ? submitting
+                  ? 'در حال ثبت…'
+                  : 'تایید و ثبت نهایی'
+                : submitting
+                  ? 'در حال ثبت…'
+                  : mode === 'debt'
+                    ? 'ثبت بدهی'
+                    : mode === 'multi'
+                      ? 'ثبت و محاسبه 🧮'
+                      : 'ثبت و ارسال',
+          enabled: view === 'result' ? true : formValid && customValid,
           loading: submitting,
-          onClick: () => void submit(),
+          onClick: () => {
+            if (view === 'result') {
+              onClose();
+              return;
+            }
+            void submit();
+          },
         }
       : null,
   );
@@ -334,14 +421,22 @@ export function AddExpense({
       }}
     >
       <span style={{ fontSize: 19 }}>
-        {mode === 'debt' && view === 'main' ? '💸' : '💼'}
+        {mode === 'debt' && view === 'main'
+          ? '💸'
+          : mode === 'multi'
+            ? '👥'
+            : '💼'}
       </span>
       <span style={{ fontWeight: 800, fontSize: 16, flex: 1 }}>
-        {view === 'custom'
-          ? 'تنظیم سهم افراد (Custom Split)'
-          : mode === 'debt'
-            ? 'ثبت بدهی'
-            : 'ثبت خرج گروهی'}
+        {view === 'result'
+          ? 'تسویه این سفر 🧮'
+          : view === 'custom'
+            ? 'تنظیم سهم افراد (Custom Split)'
+            : mode === 'debt'
+              ? 'ثبت بدهی'
+              : mode === 'multi'
+                ? 'ثبت خرج چندپرداخت‌کننده'
+                : 'ثبت خرج گروهی'}
       </span>
       <button
         type="button"
@@ -371,7 +466,7 @@ export function AddExpense({
     >
       {view === 'main' ? (
         <div style={{ padding: '0 18px 30px' }}>
-          {/* Mode switch: group expense vs plain personal debt */}
+          {/* Mode switch: group expense vs multi-payer vs plain debt */}
           <div
             style={{
               display: 'flex',
@@ -386,6 +481,7 @@ export function AddExpense({
             {(
               [
                 ['expense', '🧾 خرج گروهی'],
+                ['multi', '👥 چندپرداخت‌کننده'],
                 ['debt', '💸 بدهی'],
               ] as const
             ).map(([key, label]) => (
@@ -415,15 +511,20 @@ export function AddExpense({
             ))}
           </div>
 
-          {/* Amount + quick chips */}
-          <FieldLabel>مبلغ کل</FieldLabel>
-          <Input
-            placeholder="۰"
-            inputMode="numeric"
-            value={amountRaw}
-            onChange={(e) => setAmountRaw(e.target.value)}
-            after={<span style={{ opacity: 0.55, fontSize: 13 }}>تومان</span>}
-          />
+          {/* Amount + quick chips — in multi-payer mode the total is the
+              sum of what each person paid, shown in the paid section. */}
+          {mode !== 'multi' && (
+            <>
+              <FieldLabel>مبلغ کل</FieldLabel>
+              <Input
+                placeholder="۰"
+                inputMode="numeric"
+                value={amountRaw}
+                onChange={(e) => setAmountRaw(e.target.value)}
+                after={<span style={{ opacity: 0.55, fontSize: 13 }}>تومان</span>}
+              />
+            </>
+          )}
           {/* Title */}
           <FieldLabel>
             {mode === 'debt' ? 'عنوان (اختیاری)' : 'عنوان خرج'}
@@ -574,20 +675,25 @@ export function AddExpense({
             </>
           ) : (
             <>
-          {/* Payer */}
-          <FieldLabel>پرداخت‌کننده</FieldLabel>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {[ME, ...contacts.map((c) => c.id)].map((key) => (
-              <Button
-                key={key}
-                size="s"
-                mode={payerKey === key ? 'filled' : 'bezeled'}
-                onClick={() => setPayerKey(key)}
-              >
-                {key === ME ? 'خودم' : nameOf(key)}
-              </Button>
-            ))}
-          </div>
+          {/* Payer — single-payer mode only; multi-payer sets each
+              person's paid amount in the section below. */}
+          {mode === 'expense' && (
+            <>
+              <FieldLabel>پرداخت‌کننده</FieldLabel>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {[ME, ...contacts.map((c) => c.id)].map((key) => (
+                  <Button
+                    key={key}
+                    size="s"
+                    mode={payerKey === key ? 'filled' : 'bezeled'}
+                    onClick={() => setPayerKey(key)}
+                  >
+                    {key === ME ? 'خودم' : nameOf(key)}
+                  </Button>
+                ))}
+              </div>
+            </>
+          )}
 
           {/* Recent suggestions */}
           {recentContacts.length > 0 && (
@@ -776,6 +882,98 @@ export function AddExpense({
             )}
           </div>
 
+          {/* Multi-payer: how much each participant paid (0 = paid nothing). */}
+          {mode === 'multi' && (
+            <>
+              <FieldLabel>💰 هر نفر چقدر پرداخت کرده؟</FieldLabel>
+              <div style={{ fontSize: 12.5, opacity: 0.6, marginTop: -4 }}>
+                مبلغی که هر نفر واقعاً خرج کرده را وارد کن؛ صفر یعنی چیزی
+                نداده. جمع این‌ها مبلغ کل سفر می‌شود.
+              </div>
+              <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+                {selected.map((key, i) => {
+                  const paid = paidAmountsInOrder[i];
+                  return (
+                    <div
+                      key={key}
+                      style={{
+                        ...cardStyle,
+                        boxShadow: 'none',
+                        border: '1px solid rgba(120,140,170,0.16)',
+                        padding: '12px 14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                      }}
+                    >
+                      <InitialAvatar
+                        name={key === ME ? (me?.firstName ?? 'من') : nameOf(key)}
+                        size={44}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700 }}>{nameOf(key)}</div>
+                        <div style={{ fontSize: 12.5, opacity: 0.6 }}>
+                          {paid > 0
+                            ? `پرداخت کرده: ${formatToman(paid)}`
+                            : 'هنوز مبلغی وارد نشده'}
+                        </div>
+                      </div>
+                      <div style={{ width: 148 }}>
+                        <Input
+                          placeholder="۰"
+                          inputMode="numeric"
+                          value={paidRaw[key] ?? ''}
+                          onChange={(e) =>
+                            setPaidRaw((prev) => ({
+                              ...prev,
+                              [key]: e.target.value,
+                            }))
+                          }
+                          after={
+                            <span style={{ opacity: 0.55, fontSize: 12 }}>
+                              تومان
+                            </span>
+                          }
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Total + equal-share preview for the trip. */}
+              <div
+                style={{
+                  background:
+                    'var(--tgui--secondary_bg_color, #f2f6fb)',
+                  borderRadius: 16,
+                  padding: 14,
+                  marginTop: 16,
+                }}
+              >
+                <div style={{ fontWeight: 700 }}>🧮 مبلغ کل سفر</div>
+                {multiTotal > 0 && selected.length > 0 ? (
+                  <>
+                    <div style={{ fontSize: 19, fontWeight: 800, marginTop: 8 }}>
+                      {formatToman(multiTotal)} — سهم هر نفر:{' '}
+                      {formatToman(multiEqualPreview[0])}
+                    </div>
+                    <div style={{ fontSize: 12.5, opacity: 0.65, marginTop: 4 }}>
+                      {formatNumberFa(multiPayerCount)} نفر پرداخت کردن؛{' '}
+                      {formatNumberFa(selected.length)} نفر در سفر شریکن.
+                      بعد از ثبت، تسویه با کمترین تراکنش حساب می‌شود.
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 13, opacity: 0.65, marginTop: 6 }}>
+                    برای هر نفر مبلغ پرداختی را وارد کن تا جمع و سهم هر نفر
+                    حساب شود. حداقل دو نفر باید مبلغی داده باشند.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
             </>
           )}
 
@@ -920,11 +1118,15 @@ export function AddExpense({
               onClick={() => void submit()}
               style={{ marginTop: 14 }}
             >
-              {mode === 'debt' ? 'ثبت بدهی 💸' : 'ثبت و ارسال ✈️'}
+              {mode === 'debt'
+                ? 'ثبت بدهی 💸'
+                : mode === 'multi'
+                  ? 'ثبت و محاسبه 🧮'
+                  : 'ثبت و ارسال ✈️'}
             </Button>
           )}
         </div>
-      ) : (
+      ) : view === 'custom' ? (
         /* ---------- Custom Split view (mockup-custom-split) ---------- */
         <div style={{ padding: '0 18px 30px' }}>
           <div
@@ -1115,6 +1317,124 @@ export function AddExpense({
               style={{ marginTop: 8 }}
             >
               تایید و ثبت نهایی ✈️
+            </Button>
+          )}
+        </div>
+      ) : (
+        /* ---------- Multi-payer result: the trip's settlement plan ---------- */
+        <div style={{ padding: '0 18px 30px' }}>
+          {result ? (
+            <>
+              <div
+                style={{
+                  background: GREEN_TINT,
+                  borderRadius: 16,
+                  padding: 14,
+                  marginTop: 6,
+                }}
+              >
+                <div style={{ fontWeight: 800, fontSize: 16 }}>
+                  ثبت شد ✅
+                </div>
+                <div style={{ fontSize: 14, marginTop: 4 }}>
+                  {result.plan.transfers.length === 0 ? (
+                    <>همه صافن! 🎉 کسی به کسی بدهکار نیست.</>
+                  ) : (
+                    <>
+                      با{' '}
+                      <b>{formatNumberFa(result.plan.transfers.length)}</b>{' '}
+                      تراکنش همه صاف می‌شن — مجموع{' '}
+                      <b>{formatToman(result.plan.totalAmount)}</b>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {result.plan.transfers.length > 0 && (
+                <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
+                  {result.plan.transfers.map((t, i) => (
+                    <div
+                      key={`${t.fromKey}-${t.toKey}-${i}`}
+                      style={{
+                        ...cardStyle,
+                        boxShadow: 'none',
+                        border: '1px solid rgba(120,140,170,0.16)',
+                        padding: '12px 14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: '50%',
+                          background: BLUE,
+                          color: '#fff',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 13,
+                          fontWeight: 800,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {formatNumberFa(i + 1)}
+                      </span>
+                      <span style={{ flex: 1 }}>
+                        <b>{nameOfKey(t.fromKey)}</b> به{' '}
+                        <b>{nameOfKey(t.toKey)}</b> بده
+                      </span>
+                      <b>{formatToman(t.amount)}</b>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                  خالص هر نفر در این سفر
+                </div>
+                {result.plan.parties.map((p) => (
+                  <div
+                    key={p.key}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      padding: '6px 0',
+                      borderBottom: '1px solid rgba(120,140,170,0.10)',
+                      fontSize: 14,
+                    }}
+                  >
+                    <span>{nameOfKey(p.key)}</span>
+                    <span
+                      style={{
+                        fontWeight: 700,
+                        color: p.balance > 0 ? GREEN : p.balance < 0 ? RED : undefined,
+                      }}
+                    >
+                      {p.balance === 0
+                        ? 'صاف'
+                        : p.balance > 0
+                          ? `${formatToman(p.balance)} طلبکاره`
+                          : `${formatToman(-p.balance)} بدهکاره`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ fontSize: 12.5, opacity: 0.6, marginTop: 14 }}>
+                این تسویه فقط برای همین سفره؛ بدهی‌ها و طلب‌های قبلی با این
+                افراد جداگانه در «تسویه حساب» حساب می‌شن.
+              </div>
+            </>
+          ) : (
+            <Text style={{ opacity: 0.6 }}>نتیجه‌ای ثبت نشد.</Text>
+          )}
+          {showFallbackButton && (
+            <Button stretched size="l" onClick={onClose} style={{ marginTop: 16 }}>
+              تمام
             </Button>
           )}
         </div>

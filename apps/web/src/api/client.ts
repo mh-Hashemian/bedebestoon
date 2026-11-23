@@ -3,6 +3,8 @@ import type {
   Contact,
   CreateContactInput,
   CreateExpenseInput,
+  CreateGroupExpenseInput,
+  CreateGroupExpenseResult,
   Expense,
   Me,
   NetResult,
@@ -52,6 +54,10 @@ export function friendlyError(err: unknown): string {
       return 'حساب طرف مقابل پیدا نشد. اپ را ببند و دوباره باز کن.';
     if (m.includes('at least one other person'))
       return 'حداقل یک نفر را برای تسویه گروهی انتخاب کن.';
+    if (m.includes('At least two payers'))
+      return 'حداقل دو نفر باید مبلغی پرداخت کرده باشند.';
+    if (m.includes('Each payer must be one of the participants'))
+      return 'هر پرداخت‌کننده باید جزو شرکت‌کننده‌ها باشد.';
     if (err.status === 401)
       return 'نشست تلگرام معتبر نیست. اپ را داخل تلگرام باز کن و دوباره تلاش کن.';
     if (err.status === 403)
@@ -71,6 +77,9 @@ export interface ApiClient {
   sharePhone(phone: string): Promise<PhoneLinkResult>;
   listExpenses(): Promise<Expense[]>;
   createExpense(input: CreateExpenseInput): Promise<Expense>;
+  createGroupExpense(
+    input: CreateGroupExpenseInput,
+  ): Promise<CreateGroupExpenseResult>;
   deleteExpense(id: string): Promise<void>;
   getBalances(): Promise<Balance[]>;
   netWithCounterparty(partyKey: string): Promise<NetResult>;
@@ -151,6 +160,12 @@ export class HttpApiClient implements ApiClient {
   }
   createExpense(input: CreateExpenseInput) {
     return this.request<Expense>('/expenses', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+  createGroupExpense(input: CreateGroupExpenseInput) {
+    return this.request<CreateGroupExpenseResult>('/expenses/group', {
       method: 'POST',
       body: JSON.stringify(input),
     });

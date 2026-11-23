@@ -119,6 +119,26 @@ export interface CreateExpenseInput {
   participants: ParticipantInput[];
 }
 
+/** «چندپرداخت‌کننده»: how much one participant of a group expense paid. */
+export interface GroupPayerInput {
+  userId?: string;
+  contactId?: string;
+  amount: number;
+}
+
+/** «چندپرداخت‌کننده»: one form, several payers; total = sum of paid. */
+export interface CreateGroupExpenseInput {
+  title: string;
+  participants: ParticipantInput[];
+  payers: GroupPayerInput[];
+}
+
+/** Result of creating a multi-payer group expense: the sub-expenses plus the trip's settlement plan. */
+export interface CreateGroupExpenseResult {
+  expenses: Expense[];
+  plan: SettlePlan;
+}
+
 export interface CreateContactInput {
   name: string;
   phone?: string;
