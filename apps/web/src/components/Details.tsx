@@ -113,9 +113,18 @@ export function GroupExpenseDetailModal({
   const [delError, setDelError] = useState<string | null>(null);
   const [settlingKey, setSettlingKey] = useState<string | null>(null);
   const [settleError, setSettleError] = useState<string | null>(null);
+  /** The last transfer settled here, so a mistaken tap can be undone:
+   * unsettling the shares the settle created re-opens the debt. */
+  const [lastSettled, setLastSettled] = useState<{
+    label: string;
+    amount: number;
+    shareIds: string[];
+  } | null>(null);
+  const [undoing, setUndoing] = useState(false);
   const close = () => {
     setDelError(null);
     setSettleError(null);
+    setLastSettled(null);
     onClose();
   };
   /** Settle one transfer of this group's plan; the plan recomputes from the
@@ -130,12 +139,19 @@ export function GroupExpenseDetailModal({
     setSettlingKey(key);
     setSettleError(null);
     try {
-      await api.settleTransfer({
+      const res = await api.settleTransfer({
         fromKey,
         toKey,
         amount,
         expenseIds: expenses.map((e) => e.id),
       });
+      if (res.settledAmount > 0) {
+        setLastSettled({
+          label: `${nameByKey.get(fromKey) ?? '؟'} به ${nameByKey.get(toKey) ?? '؟'}`,
+          amount: res.settledAmount,
+          shareIds: res.settledShareIds,
+        });
+      }
       hapticSuccess();
       await refresh().catch(() => {});
     } catch (err) {
@@ -143,6 +159,25 @@ export function GroupExpenseDetailModal({
       setSettleError(friendlyError(err));
     } finally {
       setSettlingKey(null);
+    }
+  };
+  /** Undo the last settle: re-open every share it settled. */
+  const undoLastSettle = async () => {
+    if (!lastSettled || undoing) return;
+    setUndoing(true);
+    setSettleError(null);
+    try {
+      for (const id of lastSettled.shareIds) {
+        await api.unsettleShare(id);
+      }
+      hapticSuccess();
+      setLastSettled(null);
+      await refresh().catch(() => {});
+    } catch (err) {
+      hapticError();
+      setSettleError(friendlyError(err));
+    } finally {
+      setUndoing(false);
     }
   };
   const totals =
@@ -250,6 +285,33 @@ export function GroupExpenseDetailModal({
                     </div>
                   );
                 })}
+              {lastSettled && (
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '10px 20px',
+                    background: 'rgba(76, 175, 80, 0.08)',
+                    fontSize: 14,
+                  }}
+                >
+                  <span style={{ flex: 1 }}>
+                    ✅ تسویه شد: {lastSettled.label}{' '}
+                    {formatToman(lastSettled.amount)}
+                  </span>
+                  <Button
+                    size="s"
+                    mode="outline"
+                    loading={undoing}
+                    disabled={undoing}
+                    onClick={() => void undoLastSettle()}
+                  >
+                    ↩️ لغو
+                  </Button>
+                </div>
+              )}
               {settleError && (
                 <div
                   style={{
@@ -421,8 +483,8 @@ export function PersonDetailModal({
               }}
             >
               {balance.balance > 0
-                ? `به تو بدهکار است: ${formatToman(balance.balance)}`
-                : `به او بدهکاری: ${formatToman(Math.abs(balance.balance))}`}
+                ? `${balance.name} ${formatToman(balance.balance)} تومان به تو بدهکاره`
+                : `تو ${formatToman(Math.abs(balance.balance))} تومان به ${balance.name} بدهکاری`}
             </div>
             <div style={{ opacity: 0.6, fontSize: 13, marginTop: 2 }}>
               خالص: {formatSignedToman(balance.balance)}

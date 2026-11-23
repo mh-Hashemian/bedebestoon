@@ -284,4 +284,79 @@ describe('settleTransfer (mock)', () => {
     );
     expect(plan.transfers).toEqual([]);
   });
+
+  it('3 people, 2 payers (100K + 50K): the single transfer settles FULLY', async () => {
+    // Regression: the plan pairs Sara with Me for 49,999, but Sara only
+    // owes Me 33,333 directly — the rest is her share of Ali's expense.
+    // Settling only the direct shares left a 16,666 transfer behind
+    // ("the amount shrinks but it never finishes"). The flow routes it
+    // through Ali (Sara→Ali→Me), so the whole transfer settles.
+    const api = new MockApiClient();
+    const me = await api.getMe();
+    const contacts = await api.listContacts();
+    const ali = contacts[0];
+    const sara = contacts[1];
+    const created = await api.createGroupExpense({
+      title: 'repro',
+      participants: [
+        { userId: me.id },
+        { contactId: ali.id },
+        { contactId: sara.id },
+      ],
+      payers: [
+        { userId: me.id, amount: 100000 },
+        { contactId: ali.id, amount: 50000 },
+      ],
+    });
+    expect(created.plan.transfers).toHaveLength(1);
+    const t = created.plan.transfers[0];
+    const res = await api.settleTransfer({
+      fromKey: t.fromKey,
+      toKey: t.toKey,
+      amount: t.amount,
+      expenseIds: created.expenses.map((e) => e.id),
+    });
+    expect(res.settledAmount).toBe(t.amount);
+    expect(res.remainingAmount).toBe(0);
+    expect(res.settledShareIds.length).toBeGreaterThan(0);
+    const expenses = await api.listExpenses();
+    const group = groupExpenses(expenses).find((i) => i.kind === 'group');
+    const plan = groupPlan(
+      (group as { expenses: Expense[] }).expenses,
+      me.firstName,
+    );
+    expect(plan.transfers).toEqual([]);
+  });
+
+  it('undo: unsettling the settled shares re-opens the transfer', async () => {
+    const api = new MockApiClient();
+    const me = await api.getMe();
+    const contacts = await api.listContacts();
+    const ali = contacts.find((c) => c.name.includes('علی')) ?? contacts[0];
+    const created = await api.createGroupExpense({
+      title: 'تست چند پرداختی',
+      participants: [{ userId: me.id }, { contactId: ali.id }],
+      payers: [
+        { userId: me.id, amount: 100000 },
+        { contactId: ali.id, amount: 50000 },
+      ],
+    });
+    const t = created.plan.transfers[0];
+    const res = await api.settleTransfer({
+      fromKey: t.fromKey,
+      toKey: t.toKey,
+      amount: t.amount,
+      expenseIds: created.expenses.map((e) => e.id),
+    });
+    expect(res.remainingAmount).toBe(0);
+    // Undo: unsettle every share the settle created.
+    for (const id of res.settledShareIds) await api.unsettleShare(id);
+    const expenses = await api.listExpenses();
+    const group = groupExpenses(expenses).find((i) => i.kind === 'group');
+    const plan = groupPlan(
+      (group as { expenses: Expense[] }).expenses,
+      me.firstName,
+    );
+    expect(plan.transfers).toEqual([t]);
+  });
 });

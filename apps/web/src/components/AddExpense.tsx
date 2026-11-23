@@ -165,6 +165,13 @@ export function AddExpense({
   // Settling one transfer of the result plan (debtor pays creditor).
   const [settlingKey, setSettlingKey] = useState<string | null>(null);
   const [settleError, setSettleError] = useState<string | null>(null);
+  /** The last transfer settled here, so a mistaken tap can be undone. */
+  const [lastSettled, setLastSettled] = useState<{
+    label: string;
+    amount: number;
+    shareIds: string[];
+  } | null>(null);
+  const [undoing, setUndoing] = useState(false);
 
   // Inline contact creation
   const [newName, setNewName] = useState('');
@@ -293,12 +300,19 @@ export function AddExpense({
     setSettlingKey(key);
     setSettleError(null);
     try {
-      await api.settleTransfer({
+      const res = await api.settleTransfer({
         fromKey,
         toKey,
         amount,
         expenseIds: result.expenses.map((e) => e.id),
       });
+      if (res.settledAmount > 0) {
+        setLastSettled({
+          label: `${nameOfKey(fromKey)} به ${nameOfKey(toKey)}`,
+          amount: res.settledAmount,
+          shareIds: res.settledShareIds,
+        });
+      }
       hapticSuccess();
       const all = await api.listExpenses();
       const fresh = all.filter((e) =>
@@ -311,6 +325,31 @@ export function AddExpense({
       setSettleError(friendlyError(err));
     } finally {
       setSettlingKey(null);
+    }
+  };
+
+  /** Undo the last settle: re-open every share it settled. */
+  const undoLastSettle = async () => {
+    if (!result || !me || !lastSettled || undoing) return;
+    setUndoing(true);
+    setSettleError(null);
+    try {
+      for (const id of lastSettled.shareIds) {
+        await api.unsettleShare(id);
+      }
+      hapticSuccess();
+      setLastSettled(null);
+      const all = await api.listExpenses();
+      const fresh = all.filter((e) =>
+        result.expenses.some((re) => re.id === e.id),
+      );
+      setResult({ expenses: fresh, plan: groupPlan(fresh, me.firstName) });
+      await refresh().catch(() => {});
+    } catch (err) {
+      hapticError();
+      setSettleError(friendlyError(err));
+    } finally {
+      setUndoing(false);
     }
   };
 
@@ -1633,6 +1672,35 @@ export function AddExpense({
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {lastSettled && (
+                <div
+                  style={{
+                    ...cardStyle,
+                    boxShadow: 'none',
+                    border: '1px solid rgba(76,175,80,0.35)',
+                    background: 'rgba(76,175,80,0.08)',
+                    padding: '12px 14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    marginTop: 10,
+                  }}
+                >
+                  <span style={{ flex: 1, fontSize: 14 }}>
+                    ✅ تسویه شد: {lastSettled.label}{' '}
+                    {formatToman(lastSettled.amount)}
+                  </span>
+                  <Button
+                    size="s"
+                    mode="outline"
+                    loading={undoing}
+                    disabled={undoing}
+                    onClick={() => void undoLastSettle()}
+                  >
+                    ↩️ لغو
+                  </Button>
                 </div>
               )}
               <ErrorNote>{settleError}</ErrorNote>

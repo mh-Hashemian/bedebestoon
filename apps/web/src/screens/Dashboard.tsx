@@ -475,7 +475,9 @@ export function Dashboard({
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 700 }}>{b.name}</div>
               <div style={{ fontSize: 13, opacity: 0.6 }}>
-                {b.balance > 0 ? 'به تو بدهکار است' : 'به او بدهکاری'}
+                {b.balance > 0
+                  ? `${formatToman(b.balance)} تومان به تو بدهکاره`
+                  : `${formatToman(-b.balance)} تومان به او بدهکاری`}
               </div>
             </div>
             <span

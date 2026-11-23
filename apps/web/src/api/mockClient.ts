@@ -519,41 +519,96 @@ export class MockApiClient implements ApiClient {
     };
     const fromKey = resolveKey(input.fromKey);
     const toKey = resolveKey(input.toKey);
-    const owed: { expense: Expense; share: Share }[] = [];
+    // Route the transfer as a FLOW through the open shares (same as the
+    // server): direct shares first, then paths through intermediates,
+    // so a transfer larger than the direct debt still settles fully.
+    interface FlowEdge {
+      expense: Expense;
+      share: Share;
+      fromKey: string;
+      toKey: string;
+    }
+    const edges: FlowEdge[] = [];
     for (const e of this.expenses) {
       if (!input.expenseIds.includes(e.id)) continue;
       const pKey = payerPartyKey(e);
-      if (!pKey || pKey !== toKey) continue;
+      if (!pKey) continue;
       for (const s of e.shares) {
         if (s.isPaid) continue;
         const dKey = sharePartyKey(s);
-        if (!dKey || dKey !== fromKey) continue;
-        owed.push({ expense: e, share: s });
+        if (!dKey || dKey === pKey) continue;
+        edges.push({ expense: e, share: s, fromKey: dKey, toKey: pKey });
       }
     }
-    owed.sort(
-      (a, b) =>
-        a.share.createdAt.localeCompare(b.share.createdAt) ||
-        a.share.id.localeCompare(b.share.id),
-    );
+    const remaining = new Map<string, number>();
+    for (const edge of edges) remaining.set(edge.share.id, edge.share.amount);
+    const adj = new Map<string, FlowEdge[]>();
+    for (const edge of edges) {
+      if (!adj.has(edge.fromKey)) adj.set(edge.fromKey, []);
+      adj.get(edge.fromKey)!.push(edge);
+    }
+    const findPath = (): FlowEdge[] | null => {
+      const prev = new Map<string, { edge: FlowEdge; from: string }>();
+      const visited = new Set<string>([fromKey]);
+      const queue: string[] = [fromKey];
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        if (cur === toKey) break;
+        for (const edge of adj.get(cur) ?? []) {
+          if ((remaining.get(edge.share.id) ?? 0) <= 0) continue;
+          if (visited.has(edge.toKey)) continue;
+          visited.add(edge.toKey);
+          prev.set(edge.toKey, { edge, from: cur });
+          queue.push(edge.toKey);
+          if (edge.toKey === toKey) break;
+        }
+      }
+      if (!visited.has(toKey)) return null;
+      const path: FlowEdge[] = [];
+      let cur = toKey;
+      while (cur !== fromKey) {
+        const p = prev.get(cur)!;
+        path.unshift(p.edge);
+        cur = p.from;
+      }
+      return path;
+    };
+    const settledByShare = new Map<string, { edge: FlowEdge; amount: number }>();
     let budget = input.amount;
+    while (budget > 0) {
+      const path = findPath();
+      if (!path) break;
+      const bottleneck = Math.min(
+        budget,
+        ...path.map((edge) => remaining.get(edge.share.id) ?? 0),
+      );
+      if (bottleneck <= 0) break;
+      for (const edge of path) {
+        remaining.set(edge.share.id, (remaining.get(edge.share.id) ?? 0) - bottleneck);
+        const cur = settledByShare.get(edge.share.id);
+        if (cur) cur.amount += bottleneck;
+        else settledByShare.set(edge.share.id, { edge, amount: bottleneck });
+      }
+      budget -= bottleneck;
+    }
     let settledShares = 0;
-    for (const { expense, share } of owed) {
-      if (budget === 0) break;
-      if (share.amount <= budget) {
+    const settledShareIds: string[] = [];
+    for (const { edge, amount } of settledByShare.values()) {
+      const { expense, share } = edge;
+      if (amount >= share.amount) {
         share.isPaid = true;
-        budget -= share.amount;
+        settledShareIds.push(share.id);
         settledShares += 1;
       } else {
         const piece: Share = {
           ...share,
           id: nextId('share'),
-          amount: budget,
+          amount,
           isPaid: true,
         };
-        share.amount -= budget;
+        share.amount -= amount;
         expense.shares.push(piece);
-        budget = 0;
+        settledShareIds.push(piece.id);
         settledShares += 1;
       }
     }
@@ -561,6 +616,7 @@ export class MockApiClient implements ApiClient {
       settledAmount: input.amount - budget,
       remainingAmount: budget,
       settledShares,
+      settledShareIds,
     };
   }
 

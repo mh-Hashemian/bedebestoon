@@ -488,13 +488,16 @@ export class BalancesService {
   /**
    * Settle one transfer of a settlement plan: the debtor (fromKey) pays
    * the creditor (toKey) `amount`, scoped to the given expenses (one group
-   * expense's sub-expenses). The debtor's open shares to the creditor in
-   * those expenses are marked settled, oldest first, splitting a share
-   * when only part of it is covered — the same split «کم و وجه» uses.
-   * A payment only ever reduces what the debtor owes the creditor; it
-   * never creates a reverse debt. If the debtor owes the creditor less
-   * than `amount` inside these expenses, only that much is settled and
-   * the remainder is reported (the plan recomputes from the open shares).
+   * expense's sub-expenses). The transfer is routed as a FLOW through the
+   * open shares (debtor → payer): direct shares first, then paths
+   * through intermediates, splitting shares when only part is covered —
+   * the same split «کم و وجه» uses. A path through an intermediate nets
+   * that party out, so the whole transfer settles even when it exceeds
+   * the debtor's DIRECT debt to the creditor. A payment only ever
+   * reduces what the debtor owes; it never creates a reverse debt. If
+   * no flow of the full amount exists inside these expenses, only what
+   * routed is settled and the remainder is reported (the plan
+   * recomputes from the open shares).
    */
   async settleTransfer(
     userId: string,
@@ -503,6 +506,7 @@ export class BalancesService {
     settledAmount: number;
     remainingAmount: number;
     settledShares: number;
+    settledShareIds: string[];
   }> {
     if (dto.fromKey === dto.toKey) {
       throw new BadRequestException('fromKey and toKey must differ');
@@ -554,72 +558,140 @@ export class BalancesService {
       }
     }
 
-    interface OpenShare {
+    /**
+     * Settle a plan transfer as a FLOW through the open shares, not just
+     * the debtor's direct shares to the creditor. A minimum-transaction
+     * plan pairs a debtor with a creditor for the debtor's whole net,
+     * which can exceed what the debtor owes that creditor DIRECTLY
+     * (3+ people: Sara owes Me 33,333 directly but the plan says
+     * Sara → Me 49,999 — the rest is Sara's share of Ali's expense,
+     * routed through Ali). Settling only the direct shares left a
+     * smaller transfer behind and never finished. So: build the graph
+     * of open shares (debtor → payer) and repeatedly find a path from
+     * the debtor to the creditor (BFS) and settle its bottleneck —
+     * a path through an intermediate nets that party out (D→E→C:
+     * D's net +, C's net −, E unchanged), so the whole transfer
+     * settles and every party's net moves exactly as the plan says.
+     */
+    interface FlowEdge {
       id: string;
       expenseId: string;
       amount: number;
       userId: string | null;
       contactId: string | null;
       createdAt: Date;
+      fromKey: string; // debtor
+      toKey: string; // payer (creditor)
     }
-    const owed: OpenShare[] = [];
+    const edges: FlowEdge[] = [];
     for (const expense of expenses) {
       const payer: Party | null = expense.payer
         ? partyFromUser(expense.payer)
         : expense.payerContact
           ? partyFromContact(expense.payerContact)
           : null;
-      if (!payer || payer.key !== toKey) continue;
+      if (!payer) continue;
       for (const share of expense.shares) {
         const debtor: Party | null = share.user
           ? partyFromUser(share.user)
           : share.contact
             ? partyFromContact(share.contact)
             : null;
-        if (!debtor || debtor.key !== fromKey) continue;
-        owed.push({
+        if (!debtor || debtor.key === payer.key) continue;
+        edges.push({
           id: share.id,
           expenseId: expense.id,
           amount: share.amount,
           userId: share.userId,
           contactId: share.contactId,
           createdAt: share.createdAt,
+          fromKey: debtor.key,
+          toKey: payer.key,
         });
       }
     }
-    owed.sort(
-      (a, b) =>
-        a.createdAt.getTime() - b.createdAt.getTime() ||
-        a.id.localeCompare(b.id),
-    );
-
+    // Remaining capacity per share, as the flow consumes it.
+    const remaining = new Map<string, number>();
+    for (const e of edges) remaining.set(e.id, e.amount);
+    const adj = new Map<string, FlowEdge[]>();
+    for (const e of edges) {
+      if (!adj.has(e.fromKey)) adj.set(e.fromKey, []);
+      adj.get(e.fromKey)!.push(e);
+    }
+    // One BFS path from the debtor to the creditor over shares that
+    // still have capacity. Returns the path edges, or null.
+    const findPath = (): FlowEdge[] | null => {
+      const prev = new Map<string, { edge: FlowEdge; from: string }>();
+      const visited = new Set<string>([fromKey]);
+      const queue: string[] = [fromKey];
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        if (cur === toKey) break;
+        for (const e of adj.get(cur) ?? []) {
+          if ((remaining.get(e.id) ?? 0) <= 0) continue;
+          if (visited.has(e.toKey)) continue;
+          visited.add(e.toKey);
+          prev.set(e.toKey, { edge: e, from: cur });
+          queue.push(e.toKey);
+          if (e.toKey === toKey) break;
+        }
+      }
+      if (!visited.has(toKey)) return null;
+      const path: FlowEdge[] = [];
+      let cur = toKey;
+      while (cur !== fromKey) {
+        const p = prev.get(cur)!;
+        path.unshift(p.edge);
+        cur = p.from;
+      }
+      return path;
+    };
+    // Route the whole transfer amount through the graph, path by path.
+    const settledByShare = new Map<string, { edge: FlowEdge; amount: number }>();
     let budget = dto.amount;
+    while (budget > 0) {
+      const path = findPath();
+      if (!path) break;
+      const bottleneck = Math.min(
+        budget,
+        ...path.map((e) => remaining.get(e.id) ?? 0),
+      );
+      if (bottleneck <= 0) break;
+      for (const e of path) {
+        remaining.set(e.id, (remaining.get(e.id) ?? 0) - bottleneck);
+        const cur = settledByShare.get(e.id);
+        if (cur) cur.amount += bottleneck;
+        else settledByShare.set(e.id, { edge: e, amount: bottleneck });
+      }
+      budget -= bottleneck;
+    }
+
     let settledShares = 0;
+    const settledShareIds: string[] = [];
     await this.prisma.$transaction(async (tx) => {
-      for (const share of owed) {
-        if (budget === 0) break;
-        if (share.amount <= budget) {
+      for (const { edge, amount } of settledByShare.values()) {
+        if (amount >= edge.amount) {
           await tx.expenseShare.update({
-            where: { id: share.id },
+            where: { id: edge.id },
             data: { isPaid: true },
           });
-          budget -= share.amount;
+          settledShareIds.push(edge.id);
           settledShares += 1;
         } else {
           await tx.expenseShare.update({
-            where: { id: share.id },
-            data: { amount: share.amount - budget },
+            where: { id: edge.id },
+            data: { amount: edge.amount - amount },
           });
-          await tx.expenseShare.create({
+          const piece = await tx.expenseShare.create({
             data: {
-              amount: budget,
+              amount,
               isPaid: true,
-              expenseId: share.expenseId,
-              userId: share.userId,
-              contactId: share.contactId,
+              expenseId: edge.expenseId,
+              userId: edge.userId,
+              contactId: edge.contactId,
             },
           });
-          budget = 0;
+          settledShareIds.push(piece.id);
           settledShares += 1;
         }
       }
@@ -633,6 +705,7 @@ export class BalancesService {
       settledAmount,
       remainingAmount: budget,
       settledShares,
+      settledShareIds,
     };
   }
 

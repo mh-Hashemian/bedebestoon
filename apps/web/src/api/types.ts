@@ -153,6 +153,8 @@ export interface SettleTransferResult {
   settledAmount: number;
   remainingAmount: number;
   settledShares: number;
+  /** The paid shares (incl. split pieces) this settle created — unsettle these to undo it. */
+  settledShareIds: string[];
 }
 
 export interface CreateContactInput {

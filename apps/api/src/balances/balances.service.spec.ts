@@ -627,7 +627,9 @@ describe('BalancesService settleTransfer', () => {
     const txMock = {
       expenseShare: {
         update: jest.fn().mockResolvedValue({}),
-        create: jest.fn().mockResolvedValue({}),
+        create: jest.fn().mockImplementation((args: { data: unknown }) =>
+          Promise.resolve({ id: 'piece-new', ...(args.data as object) }),
+        ),
       },
     };
     const prismaMock = {
@@ -663,6 +665,7 @@ describe('BalancesService settleTransfer', () => {
       settledAmount: 25000,
       remainingAmount: 0,
       settledShares: 1,
+      settledShareIds: ['piece-new'],
     });
     // s1 (50,000) straddles 25,000 -> remainder 25,000 stays open, 25,000 settles
     expect(txMock.expenseShare.update).toHaveBeenCalledWith({
@@ -701,12 +704,66 @@ describe('BalancesService settleTransfer', () => {
       settledAmount: 40000,
       remainingAmount: 0,
       settledShares: 1,
+      settledShareIds: ['s1'],
     });
     expect(txMock.expenseShare.update).toHaveBeenCalledWith({
       where: { id: 's1' },
       data: { isPaid: true },
     });
     expect(txMock.expenseShare.create).not.toHaveBeenCalled();
+  });
+
+  it('3 people: routes the transfer through an intermediate, settles fully', async () => {
+    // u1 paid 100,000, u2 paid 50,000, u3 paid nothing; share 50,000 each.
+    // The plan says u3 → u1 49,999, but u3 only owes u1 33,333 directly —
+    // the rest is u3's share of u2's expense. The flow routes it
+    // u3→u2→u1, so the transfer settles in full instead of leaving 16,666.
+    const { service, txMock } = makeTransferService([
+      expense('e1', {
+        payerId: 'u1',
+        shares: [
+          share('s1', 33333, { userId: 'u2', at: T(1) }),
+          share('s2', 33333, { userId: 'u3', at: T(1) }),
+        ],
+      }),
+      expense('e2', {
+        payerId: 'u2',
+        shares: [
+          share('s3', 16667, { userId: 'u1', at: T(2) }),
+          share('s4', 16666, { userId: 'u3', at: T(2) }),
+        ],
+      }),
+    ]);
+    const res = await service.settleTransfer('u1', {
+      fromKey: 'user:u3',
+      toKey: 'user:u1',
+      amount: 49999,
+      expenseIds: ['e1', 'e2'],
+    });
+    expect(res).toEqual({
+      settledAmount: 49999,
+      remainingAmount: 0,
+      settledShares: 3,
+      settledShareIds: expect.arrayContaining(['s2', 's4', 'piece-new']),
+    });
+    // s2 (u3→u1, 33,333) settles whole; s4 (u3→u2, 16,666) settles whole;
+    // s1 (u2→u1, 33,333) splits: 16,666 settles, 16,667 stays open.
+    expect(txMock.expenseShare.update).toHaveBeenCalledWith({
+      where: { id: 's2' },
+      data: { isPaid: true },
+    });
+    expect(txMock.expenseShare.update).toHaveBeenCalledWith({
+      where: { id: 's4' },
+      data: { isPaid: true },
+    });
+    expect(txMock.expenseShare.update).toHaveBeenCalledWith({
+      where: { id: 's1' },
+      data: { amount: 16667 },
+    });
+    // s3 (u1 owes u2) is untouched.
+    expect(txMock.expenseShare.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 's3' } }),
+    );
   });
 
   it('settles only what is owed when the amount exceeds the debt', async () => {
@@ -726,6 +783,7 @@ describe('BalancesService settleTransfer', () => {
       settledAmount: 10000,
       remainingAmount: 15000,
       settledShares: 1,
+      settledShareIds: ['s1'],
     });
   });
 
