@@ -328,8 +328,8 @@ export function AddExpense({
         ? contactPartyKey(contact)
         : `contact:${key}`;
     });
-    const payers = selected
-      .map((key, i) => ({ key: participantKeys[i], amount: paidAmountsInOrder[i] }))
+    const payers = participantKeys
+      .map((key, i) => ({ key, amount: paidAmountsInOrder[i] }))
       .filter((p) => p.amount > 0);
     setPreview(previewGroupPlan(participantKeys, payers));
     setView('preview');
