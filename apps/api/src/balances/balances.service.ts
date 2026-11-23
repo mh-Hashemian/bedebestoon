@@ -525,7 +525,6 @@ export class BalancesService {
     };
     const fromKey = await resolveKey(dto.fromKey);
     const toKey = await resolveKey(dto.toKey);
-    const meKey = `user:${userId}`;
 
     const expenses = await this.prisma.expense.findMany({
       where: { id: { in: dto.expenseIds } },
@@ -544,18 +543,27 @@ export class BalancesService {
     if (expenses.length !== dto.expenseIds.length) {
       throw new NotFoundException('One or more expenses were not found');
     }
-    // Only the group creator, the debtor or the creditor may settle a
-    // transfer of this group.
-    for (const expense of expenses) {
-      const allowed =
-        expense.createdById === userId ||
-        meKey === fromKey ||
-        meKey === toKey;
-      if (!allowed) {
-        throw new ForbiddenException(
-          'Only the creator, the debtor or the creditor can settle this transfer',
-        );
-      }
+    // Anyone who is part of this group expense may settle any of its
+    // transfers — the creator, a payer, or anyone with a share in it
+    // (directly or through a linked contact). A group is a shared,
+    // trusted space; restricting settle to the debtor/creditor alone
+    // meant a participant couldn't mark a transfer between two others
+    // as settled. Only a stranger (no part in the group at all) is
+    // refused. A mistaken settle can be undone (unsettleShare).
+    const isParticipant = expenses.some((expense) => {
+      if (expense.createdById === userId) return true;
+      if (expense.payerId === userId) return true;
+      if (expense.payerContact?.linkedUserId === userId) return true;
+      return expense.shares.some(
+        (share) =>
+          share.userId === userId ||
+          share.contact?.linkedUserId === userId,
+      );
+    });
+    if (!isParticipant) {
+      throw new ForbiddenException(
+        'Only a participant of this group expense can settle its transfers',
+      );
     }
 
     /**

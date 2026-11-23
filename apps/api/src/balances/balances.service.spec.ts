@@ -801,8 +801,32 @@ describe('BalancesService settleTransfer', () => {
         amount: 10000,
         expenseIds: ['e1'],
       }),
-    ).rejects.toThrow('Only the creator, the debtor or the creditor');
+    ).rejects.toThrow('Only a participant of this group expense');
     expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('any participant may settle a transfer between two others', async () => {
+    // u3 is in the group (has a share in e1) but is neither the debtor
+    // (u2) nor the creditor (u1) of this transfer — and not the creator.
+    // A group is a shared space: they can still mark it settled.
+    const { service } = makeTransferService([
+      expense('e1', {
+        payerId: 'u1',
+        createdById: 'u1',
+        shares: [
+          share('s1', 10000, { userId: 'u2' }),
+          share('s2', 5000, { userId: 'u3' }),
+        ],
+      }),
+    ]);
+    const res = await service.settleTransfer('u3', {
+      fromKey: 'user:u2',
+      toKey: 'user:u1',
+      amount: 10000,
+      expenseIds: ['e1'],
+    });
+    expect(res.settledAmount).toBe(10000);
+    expect(res.remainingAmount).toBe(0);
   });
 
   it('rejects fromKey === toKey', async () => {
