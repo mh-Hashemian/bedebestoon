@@ -7,6 +7,7 @@ import type {
   Me,
   NetResult,
   PhoneLinkResult,
+  SettlePlan,
 } from './types';
 
 export class ApiError extends Error {
@@ -49,6 +50,8 @@ export function friendlyError(err: unknown): string {
       return 'این مخاطب در خرج‌ها استفاده شده و قابل حذف نیست.';
     if (m.includes('partyKey'))
       return 'حساب طرف مقابل پیدا نشد. اپ را ببند و دوباره باز کن.';
+    if (m.includes('at least one other person'))
+      return 'حداقل یک نفر را برای تسویه گروهی انتخاب کن.';
     if (err.status === 401)
       return 'نشست تلگرام معتبر نیست. اپ را داخل تلگرام باز کن و دوباره تلاش کن.';
     if (err.status === 403)
@@ -71,6 +74,7 @@ export interface ApiClient {
   deleteExpense(id: string): Promise<void>;
   getBalances(): Promise<Balance[]>;
   netWithCounterparty(partyKey: string): Promise<NetResult>;
+  getSettlePlan(partyKeys: string[]): Promise<SettlePlan>;
   settleShare(shareId: string): Promise<void>;
   unsettleShare(shareId: string): Promise<void>;
 }
@@ -158,6 +162,12 @@ export class HttpApiClient implements ApiClient {
     return this.request<NetResult>('/balances/net', {
       method: 'POST',
       body: JSON.stringify({ partyKey }),
+    });
+  }
+  getSettlePlan(partyKeys: string[]) {
+    return this.request<SettlePlan>('/balances/settle-plan', {
+      method: 'POST',
+      body: JSON.stringify({ partyKeys }),
     });
   }
   async settleShare(shareId: string) {

@@ -1,4 +1,5 @@
 import { equalSplit, isValidCustomSplit } from '../lib/split';
+import { computeSettlePlan } from '../lib/settlePlan';
 import {
   contactPartyKey,
   payerPartyKey,
@@ -15,6 +16,7 @@ import type {
   Me,
   NetResult,
   PhoneLinkResult,
+  SettlePlan,
   Share,
 } from './types';
 
@@ -379,6 +381,49 @@ export class MockApiClient implements ApiClient {
       }
     }
     return { offsetAmount: offset, balance, settledShares };
+  }
+
+  /** Mirrors the server's group settlement: nets across the selected set, then the greedy plan. */
+  async getSettlePlan(partyKeys: string[]): Promise<SettlePlan> {
+    const meKey = userPartyKey(ME_ID);
+    const keys = new Set<string>([meKey, ...partyKeys]);
+    if (keys.size < 2) {
+      throw new ApiError(
+        400,
+        'Select at least one other person to settle with',
+      );
+    }
+    for (const key of [...keys]) {
+      if (!key.startsWith('contact:')) continue;
+      const contact = this.contacts.find(
+        (c) => c.id === key.slice('contact:'.length),
+      );
+      if (contact?.linkedUserId) {
+        keys.delete(key);
+        keys.add(userPartyKey(contact.linkedUserId));
+      }
+    }
+    const nets = new Map<string, number>();
+    for (const e of this.expenses) {
+      const pKey = payerPartyKey(e);
+      if (!pKey || !keys.has(pKey)) continue;
+      for (const s of e.shares) {
+        if (s.isPaid) continue;
+        const dKey = sharePartyKey(s);
+        if (!dKey || dKey === pKey || !keys.has(dKey)) continue;
+        nets.set(pKey, (nets.get(pKey) ?? 0) + s.amount);
+        nets.set(dKey, (nets.get(dKey) ?? 0) - s.amount);
+      }
+    }
+    const parties = [...keys]
+      .map((key) => ({ key, balance: nets.get(key) ?? 0 }))
+      .sort((a, b) => b.balance - a.balance);
+    const transfers = computeSettlePlan(parties);
+    return {
+      transfers,
+      parties,
+      totalAmount: transfers.reduce((sum, t) => sum + t.amount, 0),
+    };
   }
 
   async settleShare(shareId: string): Promise<void> {

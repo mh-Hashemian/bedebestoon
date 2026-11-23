@@ -12,6 +12,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { TelegramAuthGuard } from '../auth/telegram-auth.guard';
 import { BalancesService } from './balances.service';
 import { NetBalanceDto } from './dto/net-balance.dto';
+import { SettlePlanDto } from './dto/settle-plan.dto';
 
 @Controller()
 @UseGuards(TelegramAuthGuard)
@@ -31,6 +32,16 @@ export class BalancesController {
   @Post('balances/net')
   net(@CurrentUser() user: User, @Body() dto: NetBalanceDto) {
     return this.balances.netWithCounterparty(user.id, dto.partyKey);
+  }
+
+  /**
+   * «تسویه گروهی»: the minimum-transaction plan for the user and the
+   * selected counterparties — who pays whom, and how much, so every
+   * party's net becomes zero. Read-only: it settles nothing by itself.
+   */
+  @Post('balances/settle-plan')
+  settlePlan(@CurrentUser() user: User, @Body() dto: SettlePlanDto) {
+    return this.balances.getSettlePlan(user.id, dto.partyKeys);
   }
 
   /** Mark a share as settled/paid. */

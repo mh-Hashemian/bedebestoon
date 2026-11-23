@@ -12,6 +12,7 @@ import {
 } from '../expenses/expenses.service';
 import { TelegramNotifyService } from '../notifications/telegram-notify.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { computeSettlePlan } from './settle-plan.util';
 
 export interface CounterpartyBalance {
   /** "user:<id>" or "contact:<id>" — a linked contact resolves to its user. */
@@ -34,6 +35,32 @@ export interface NetResult {
   balance: number;
   /** Shares marked settled, including pieces created by splitting. */
   settledShares: number;
+}
+
+export interface SettlePlanParty {
+  key: string;
+  /**
+   * Net across the selected group's open shares. Positive: this party is
+   * owed money. Negative: this party owes money. All nets sum to zero.
+   */
+  balance: number;
+}
+
+export interface SettlePlanTransfer {
+  /** Debtor — pays this amount. */
+  fromKey: string;
+  /** Creditor — receives this amount. */
+  toKey: string;
+  amount: number;
+}
+
+export interface SettlePlan {
+  /** The transfers, in order; executing them zeroes every party's net. */
+  transfers: SettlePlanTransfer[];
+  /** Every selected party's net (including zeroes), highest first. */
+  parties: SettlePlanParty[];
+  /** Sum of all transfer amounts. */
+  totalAmount: number;
 }
 
 interface Party {
@@ -456,5 +483,111 @@ export class BalancesService {
       void this.notifyNetResult(userId, partyKey, offset, balance);
     }
     return { offsetAmount: offset, balance, settledShares };
+  }
+
+  /**
+   * «تسویه گروهی» — the minimum-transaction plan for a set of people.
+   * Each party's net is computed across the open shares where BOTH the
+   * payer and the debtor are in the selected set; shares with anyone
+   * outside the set are excluded, so the nets always sum to zero. The
+   * current user is always included. Names are resolved on the client
+   * from GET /balances (the keys match exactly).
+   */
+  async getSettlePlan(
+    userId: string,
+    partyKeys: string[],
+  ): Promise<SettlePlan> {
+    const meKey = `user:${userId}`;
+    const keys = new Set<string>([meKey]);
+    for (const key of partyKeys) {
+      if (!/^(user|contact):[A-Za-z0-9-]+$/.test(key)) {
+        throw new BadRequestException(
+          'partyKey must be a counterparty key from GET /balances',
+        );
+      }
+      keys.add(key);
+    }
+    if (keys.size < 2) {
+      throw new BadRequestException(
+        'Select at least one other person to settle with',
+      );
+    }
+
+    // A linked contact resolves to its user (GET /balances already does
+    // this, but resolve defensively so a stale contact key still settles
+    // against the right party).
+    const contactIds = [...keys]
+      .filter((k) => k.startsWith('contact:'))
+      .map((k) => k.slice('contact:'.length));
+    if (contactIds.length > 0) {
+      const linked = await this.prisma.contact.findMany({
+        where: { id: { in: contactIds } },
+        select: { id: true, linkedUserId: true },
+      });
+      for (const c of linked) {
+        if (c.linkedUserId) {
+          keys.delete(`contact:${c.id}`);
+          keys.add(`user:${c.linkedUserId}`);
+        }
+      }
+    }
+
+    const expenses = await this.prisma.expense.findMany({
+      where: {
+        OR: [
+          { payerId: userId },
+          { payerContact: { linkedUserId: userId } },
+          { shares: { some: { userId } } },
+          { shares: { some: { contact: { linkedUserId: userId } } } },
+          // Expenses the user recorded between other people (e.g. a
+          // contact paid for two other contacts on the trip).
+          { createdById: userId },
+        ],
+      },
+      include: {
+        payer: { select: USER_PUBLIC_SELECT },
+        payerContact: { select: CONTACT_PUBLIC_SELECT },
+        shares: {
+          where: { isPaid: false },
+          include: {
+            user: { select: USER_PUBLIC_SELECT },
+            contact: { select: CONTACT_PUBLIC_SELECT },
+          },
+        },
+      },
+    });
+
+    const nets = new Map<string, number>();
+    for (const expense of expenses) {
+      const payer: Party | null = expense.payer
+        ? partyFromUser(expense.payer)
+        : expense.payerContact
+          ? partyFromContact(expense.payerContact)
+          : null;
+      if (!payer || !keys.has(payer.key)) continue;
+
+      for (const share of expense.shares) {
+        const debtor: Party | null = share.user
+          ? partyFromUser(share.user)
+          : share.contact
+            ? partyFromContact(share.contact)
+            : null;
+        if (!debtor || debtor.key === payer.key || !keys.has(debtor.key)) {
+          continue;
+        }
+        nets.set(payer.key, (nets.get(payer.key) ?? 0) + share.amount);
+        nets.set(debtor.key, (nets.get(debtor.key) ?? 0) - share.amount);
+      }
+    }
+
+    const parties: SettlePlanParty[] = [...keys]
+      .map((key) => ({ key, balance: nets.get(key) ?? 0 }))
+      .sort((a, b) => b.balance - a.balance);
+    const transfers = computeSettlePlan(parties);
+    return {
+      transfers,
+      parties,
+      totalAmount: transfers.reduce((sum, t) => sum + t.amount, 0),
+    };
   }
 }

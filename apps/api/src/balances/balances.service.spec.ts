@@ -435,3 +435,148 @@ describe('BalancesService notifications', () => {
     );
   });
 });
+
+/**
+ * getSettlePlan («تسویه گروهی»): nets across the selected group's open
+ * shares, then the greedy minimum-transaction plan. Read-only.
+ */
+describe('BalancesService getSettlePlan', () => {
+  const T = (day: number) => new Date(2026, 0, day);
+
+  function share(
+    id: string,
+    amount: number,
+    opts: { userId?: string; contact?: Record<string, unknown> | null; at?: Date } = {},
+  ) {
+    return {
+      id,
+      amount,
+      isPaid: false,
+      userId: opts.userId ?? null,
+      contactId: opts.contact ? (opts.contact.id as string) : null,
+      createdAt: opts.at ?? T(1),
+      user: opts.userId ? { id: opts.userId, firstName: 'U' } : null,
+      contact: opts.contact ?? null,
+    };
+  }
+
+  function expense(
+    id: string,
+    opts: {
+      payerId?: string;
+      payerContact?: Record<string, unknown> | null;
+      shares: ReturnType<typeof share>[];
+    },
+  ) {
+    return {
+      id,
+      payerId: opts.payerId ?? null,
+      payer: opts.payerId ? { id: opts.payerId, firstName: 'P' } : null,
+      payerContactId: opts.payerContact
+        ? (opts.payerContact.id as string)
+        : null,
+      payerContact: opts.payerContact ?? null,
+      shares: opts.shares,
+    };
+  }
+
+  function makePlanService(expenses: unknown[]) {
+    const prismaMock = {
+      contact: { findMany: jest.fn().mockResolvedValue([]) },
+      expense: { findMany: jest.fn().mockResolvedValue(expenses) },
+    };
+    const service = new BalancesService(prismaMock as never);
+    return { service, prismaMock };
+  }
+
+  it('the 4-person trip: 3 transfers settle everyone', async () => {
+    const { service } = makePlanService([
+      // u1 paid 1,000,000 for dinner, split 250,000 each.
+      expense('dinner', {
+        payerId: 'u1',
+        shares: [
+          share('s1', 250000, { userId: 'u2' }),
+          share('s2', 250000, { userId: 'u3' }),
+          share('s3', 250000, { userId: 'u4' }),
+        ],
+      }),
+      // u2 paid 2,000,000 for the hotel, split 500,000 each.
+      expense('hotel', {
+        payerId: 'u2',
+        shares: [
+          share('s4', 500000, { userId: 'u1' }),
+          share('s5', 500000, { userId: 'u3' }),
+          share('s6', 500000, { userId: 'u4' }),
+        ],
+      }),
+      // u3 paid 500,000 for the taxi, split 125,000 each.
+      expense('taxi', {
+        payerId: 'u3',
+        shares: [
+          share('s7', 125000, { userId: 'u1' }),
+          share('s8', 125000, { userId: 'u2' }),
+          share('s9', 125000, { userId: 'u4' }),
+        ],
+      }),
+    ]);
+    const plan = await service.getSettlePlan('u1', [
+      'user:u2',
+      'user:u3',
+      'user:u4',
+    ]);
+    expect(plan.parties).toEqual([
+      { key: 'user:u2', balance: 1125000 },
+      { key: 'user:u1', balance: 125000 },
+      { key: 'user:u3', balance: -375000 },
+      { key: 'user:u4', balance: -875000 },
+    ]);
+    expect(plan.transfers).toEqual([
+      { fromKey: 'user:u4', toKey: 'user:u2', amount: 875000 },
+      { fromKey: 'user:u3', toKey: 'user:u2', amount: 250000 },
+      { fromKey: 'user:u3', toKey: 'user:u1', amount: 125000 },
+    ]);
+    expect(plan.totalAmount).toBe(1250000);
+  });
+
+  it('excludes shares with anyone outside the selected set', async () => {
+    const { service } = makePlanService([
+      expense('e1', {
+        payerId: 'u1',
+        shares: [
+          share('s1', 100000, { userId: 'u2' }),
+          // u5 is not selected: this 100,000 must not move any net.
+          share('s2', 100000, { userId: 'u5' }),
+        ],
+      }),
+    ]);
+    const plan = await service.getSettlePlan('u1', ['user:u2']);
+    expect(plan.parties).toEqual([
+      { key: 'user:u1', balance: 100000 },
+      { key: 'user:u2', balance: -100000 },
+    ]);
+    expect(plan.transfers).toEqual([
+      { fromKey: 'user:u2', toKey: 'user:u1', amount: 100000 },
+    ]);
+  });
+
+  it('already settled: empty plan', async () => {
+    const { service } = makePlanService([]);
+    const plan = await service.getSettlePlan('u1', ['user:u2']);
+    expect(plan.transfers).toEqual([]);
+    expect(plan.totalAmount).toBe(0);
+  });
+
+  it('rejects an empty selection', async () => {
+    const { service } = makePlanService([]);
+    await expect(service.getSettlePlan('u1', [])).rejects.toThrow(
+      'at least one other person',
+    );
+  });
+
+  it('rejects a malformed party key', async () => {
+    const { service } = makePlanService([]);
+    await expect(
+      service.getSettlePlan('u1', ['yazdani']),
+    ).rejects.toThrow('partyKey');
+  });
+});

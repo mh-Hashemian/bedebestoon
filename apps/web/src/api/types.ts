@@ -80,6 +80,31 @@ export interface NetResult {
   settledShares: number;
 }
 
+/** «تسویه گروهی»: one party's net across the selected group. */
+export interface SettlePlanParty {
+  /** "user:<id>" or "contact:<id>" — matches GET /balances keys. */
+  key: string;
+  /** Positive: this party is owed money. Negative: this party owes money. */
+  balance: number;
+}
+
+/** «تسویه گروهی»: one transfer of the plan (debtor pays creditor). */
+export interface SettlePlanTransfer {
+  fromKey: string;
+  toKey: string;
+  amount: number;
+}
+
+/** «تسویه گروهی»: the minimum-transaction plan for a group of people. */
+export interface SettlePlan {
+  /** The transfers, in order; executing them zeroes every party's net. */
+  transfers: SettlePlanTransfer[];
+  /** Every selected party's net (including zeroes), highest first. */
+  parties: SettlePlanParty[];
+  /** Sum of all transfer amounts. */
+  totalAmount: number;
+}
+
 export interface ParticipantInput {
   userId?: string;
   contactId?: string;
