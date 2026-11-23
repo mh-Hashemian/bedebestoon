@@ -429,7 +429,7 @@ export function AddExpense({
       </span>
       <span style={{ fontWeight: 800, fontSize: 16, flex: 1 }}>
         {view === 'result'
-          ? 'تسویه این سفر 🧮'
+          ? 'تسویه این خرج 🧮'
           : view === 'custom'
             ? 'تنظیم سهم افراد (Custom Split)'
             : mode === 'debt'
@@ -888,7 +888,7 @@ export function AddExpense({
               <FieldLabel>💰 هر نفر چقدر پرداخت کرده؟</FieldLabel>
               <div style={{ fontSize: 12.5, opacity: 0.6, marginTop: -4 }}>
                 مبلغی که هر نفر واقعاً خرج کرده را وارد کن؛ صفر یعنی چیزی
-                نداده. جمع این‌ها مبلغ کل سفر می‌شود.
+                نداده. جمع این‌ها مبلغ کل خرج می‌شود.
               </div>
               <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
                 {selected.map((key, i) => {
@@ -951,7 +951,7 @@ export function AddExpense({
                   marginTop: 16,
                 }}
               >
-                <div style={{ fontWeight: 700 }}>🧮 مبلغ کل سفر</div>
+                <div style={{ fontWeight: 700 }}>🧮 مبلغ کل</div>
                 {multiTotal > 0 && selected.length > 0 ? (
                   <>
                     <div style={{ fontSize: 19, fontWeight: 800, marginTop: 8 }}>
@@ -960,7 +960,7 @@ export function AddExpense({
                     </div>
                     <div style={{ fontSize: 12.5, opacity: 0.65, marginTop: 4 }}>
                       {formatNumberFa(multiPayerCount)} نفر پرداخت کردن؛{' '}
-                      {formatNumberFa(selected.length)} نفر در سفر شریکن.
+                      {formatNumberFa(selected.length)} نفر در این خرج شریکن.
                       بعد از ثبت، تسویه با کمترین تراکنش حساب می‌شود.
                     </div>
                   </>
@@ -1394,7 +1394,7 @@ export function AddExpense({
 
               <div style={{ marginTop: 16 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>
-                  خالص هر نفر در این سفر
+                  خالص هر نفر
                 </div>
                 {result.plan.parties.map((p) => (
                   <div
@@ -1425,7 +1425,7 @@ export function AddExpense({
               </div>
 
               <div style={{ fontSize: 12.5, opacity: 0.6, marginTop: 14 }}>
-                این تسویه فقط برای همین سفره؛ بدهی‌ها و طلب‌های قبلی با این
+                این تسویه فقط برای همین خرجه؛ بدهی‌ها و طلب‌های قبلی با این
                 افراد جداگانه در «تسویه حساب» حساب می‌شن.
               </div>
             </>
