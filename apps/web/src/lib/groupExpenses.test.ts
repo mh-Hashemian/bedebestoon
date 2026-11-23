@@ -4,6 +4,7 @@ import { MockApiClient } from '../api/mockClient';
 import {
   groupExpenses,
   groupMyNet,
+  previewGroupPlan,
   groupPaidBy,
   groupPartyTotals,
   groupPlan,
@@ -194,5 +195,93 @@ describe('groupExpenses', () => {
     expect(groupSharePerPerson(group, me.firstName)).toBe(875000);
     expect(groupMyNet(group, me.id)).toBe(125000);
     expect(groupPlan(group, me.firstName).transfers).toHaveLength(3);
+  });
+});
+
+describe('previewGroupPlan', () => {
+  it("Mohammad's 2-person case: 50,000 + 100,000 -> one 25,000 transfer", () => {
+    const plan = previewGroupPlan(['user:u1', 'user:u2'], [
+      { key: 'user:u1', amount: 100000 },
+      { key: 'user:u2', amount: 50000 },
+    ]);
+    expect(plan.totalAmount).toBe(25000);
+    expect(plan.parties).toEqual([
+      { key: 'user:u1', balance: 25000 },
+      { key: 'user:u2', balance: -25000 },
+    ]);
+    expect(plan.transfers).toEqual([
+      { fromKey: 'user:u2', toKey: 'user:u1', amount: 25000 },
+    ]);
+  });
+
+  it('the 4-person case: 1M + 2M + 500K -> 3 transfers, share 875,000', () => {
+    const plan = previewGroupPlan(
+      ['user:me', 'contact:ali', 'contact:sara', 'contact:reza'],
+      [
+        { key: 'user:me', amount: 1000000 },
+        { key: 'contact:ali', amount: 2000000 },
+        { key: 'contact:sara', amount: 500000 },
+      ],
+    );
+    expect(plan.totalAmount).toBe(1250000);
+    expect(plan.parties).toEqual([
+      { key: 'contact:ali', balance: 1125000 },
+      { key: 'user:me', balance: 125000 },
+      { key: 'contact:sara', balance: -375000 },
+      { key: 'contact:reza', balance: -875000 },
+    ]);
+    expect(plan.transfers).toHaveLength(3);
+  });
+
+  it('all equal: no transfers', () => {
+    const plan = previewGroupPlan(['user:u1', 'user:u2'], [
+      { key: 'user:u1', amount: 50000 },
+      { key: 'user:u2', amount: 50000 },
+    ]);
+    expect(plan.transfers).toEqual([]);
+    expect(plan.totalAmount).toBe(0);
+  });
+});
+
+describe('settleTransfer (mock)', () => {
+  it("Mohammad's 2-person case: settle the 25,000 transfer, plan empties", async () => {
+    const api = new MockApiClient();
+    const me = await api.getMe();
+    const contacts = await api.listContacts();
+    const ali = contacts.find((c) => c.name.includes('علی')) ?? contacts[0];
+    const created = await api.createGroupExpense({
+      title: 'تست چند پرداختی',
+      participants: [{ userId: me.id }, { contactId: ali.id }],
+      payers: [
+        { userId: me.id, amount: 100000 },
+        { contactId: ali.id, amount: 50000 },
+      ],
+    });
+    expect(created.plan.transfers).toEqual([
+      // The mock's ali contact is linked to a user, so the plan resolves
+      // him to his user key (same as the real server).
+      {
+        fromKey: 'user:' + (ali.linkedUserId ?? ali.id),
+        toKey: 'user:' + me.id,
+        amount: 25000,
+      },
+    ]);
+    const res = await api.settleTransfer({
+      fromKey: 'user:' + (ali.linkedUserId ?? ali.id),
+      toKey: 'user:' + me.id,
+      amount: 25000,
+      expenseIds: created.expenses.map((e) => e.id),
+    });
+    expect(res.settledAmount).toBe(25000);
+    expect(res.remainingAmount).toBe(0);
+    // The plan recomputed from the stored shares is now empty.
+    const expenses = await api.listExpenses();
+    const group = groupExpenses(expenses).find((i) => i.kind === 'group');
+    expect(group).toBeDefined();
+    const plan = groupPlan(
+      (group as { expenses: Expense[] }).expenses,
+      me.firstName,
+    );
+    expect(plan.transfers).toEqual([]);
   });
 });

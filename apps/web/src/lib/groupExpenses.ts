@@ -1,4 +1,4 @@
-import type { Expense } from '../api/types';
+import type { Expense, SettlePlan } from '../api/types';
 import { formatToman } from './format';
 import {
   myNetForExpense,
@@ -8,6 +8,42 @@ import {
   sharePartyKey,
 } from './parties';
 import { computeSettlePlan } from './settlePlan';
+import { equalSplit } from './split';
+
+/**
+ * Client-side preview of a multi-payer plan, computed EXACTLY as the server
+ * will store it: each payer's amount is split equally among all
+ * participants (same equalSplit, same remainder rule), each party's net is
+ * paid − share, then the minimum-transaction plan. Lets the user verify the
+ * numbers BEFORE the expense is created.
+ */
+export function previewGroupPlan(
+  participantKeys: string[],
+  payers: { key: string; amount: number }[],
+): SettlePlan {
+  const paidByKey = new Map<string, number>();
+  const shareByKey = new Map<string, number>();
+  for (const payer of payers) {
+    if (payer.amount <= 0) continue;
+    paidByKey.set(payer.key, (paidByKey.get(payer.key) ?? 0) + payer.amount);
+    const amounts = equalSplit(payer.amount, participantKeys.length);
+    participantKeys.forEach((key, i) => {
+      shareByKey.set(key, (shareByKey.get(key) ?? 0) + amounts[i]);
+    });
+  }
+  const parties = [...new Set(participantKeys)]
+    .map((key) => ({
+      key,
+      balance: (paidByKey.get(key) ?? 0) - (shareByKey.get(key) ?? 0),
+    }))
+    .sort((a, b) => b.balance - a.balance);
+  const transfers = computeSettlePlan(parties);
+  return {
+    transfers,
+    parties,
+    totalAmount: transfers.reduce((sum, t) => sum + t.amount, 0),
+  };
+}
 
 /**
  * One row in the dashboard transaction list: a lone expense, or the
@@ -25,9 +61,15 @@ export type TransactionItem =
 const GROUP_WINDOW_MS = 2000;
 
 function participantKeySet(expense: Expense): string {
-  return expense.shares
-    .map((s) => sharePartyKey(s))
-    .filter((k): k is string => !!k)
+  // Deduplicated: settling splits a share (the settled piece is a new
+  // share for the same party), which must not break the grouping.
+  return [
+    ...new Set(
+      expense.shares
+        .map((s) => sharePartyKey(s))
+        .filter((k): k is string => !!k),
+    ),
+  ]
     .sort()
     .join('|');
 }
@@ -89,10 +131,11 @@ export function groupPartyTotals(
 ): GroupPartyTotal[] {
   const byKey = new Map<
     string,
-    { name: string; paid: number; share: number }
+    { name: string; paid: number; share: number; balance: number }
   >();
   const ensure = (key: string, name: string) => {
-    if (!byKey.has(key)) byKey.set(key, { name, paid: 0, share: 0 });
+    if (!byKey.has(key))
+      byKey.set(key, { name, paid: 0, share: 0, balance: 0 });
     return byKey.get(key)!;
   };
   for (const expense of expenses) {
@@ -104,11 +147,22 @@ export function groupPartyTotals(
     for (const share of expense.shares) {
       const dKey = sharePartyKey(share);
       if (!dKey) continue;
+      // `share` is the original consumption (what the person was supposed
+      // to pay) — it never changes when a share is settled.
       ensure(dKey, shareDisplayName(share, myName)).share += share.amount;
+      // `balance` is the OUTSTANDING net, from open shares only — the same
+      // formula as the backend's settle plan (myNetForExpense). A settled
+      // share no longer counts, so the plan empties as transfers settle.
+      if (share.isPaid) continue;
+      if (!pKey || dKey === pKey) continue;
+      ensure(pKey, payerDisplayName(expense, myName)).balance +=
+        share.amount;
+      ensure(dKey, shareDisplayName(share, myName)).balance -=
+        share.amount;
     }
   }
   return [...byKey.entries()]
-    .map(([key, row]) => ({ key, ...row, balance: row.paid - row.share }))
+    .map(([key, row]) => ({ key, ...row }))
     .sort((a, b) => b.balance - a.balance);
 }
 

@@ -139,6 +139,22 @@ export interface CreateGroupExpenseResult {
   plan: SettlePlan;
 }
 
+/** Settle one transfer of a settlement plan (debtor pays creditor). */
+export interface SettleTransferInput {
+  fromKey: string;
+  toKey: string;
+  amount: number;
+  /** The expenses the transfer belongs to (one group expense's sub-expenses). */
+  expenseIds: string[];
+}
+
+/** Result of settling one transfer. */
+export interface SettleTransferResult {
+  settledAmount: number;
+  remainingAmount: number;
+  settledShares: number;
+}
+
 export interface CreateContactInput {
   name: string;
   phone?: string;

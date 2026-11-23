@@ -580,3 +580,182 @@ describe('BalancesService getSettlePlan', () => {
     ).rejects.toThrow('partyKey');
   });
 });
+
+/**
+ * settleTransfer: one transfer of a settlement plan (debtor pays creditor),
+ * scoped to a group expense's sub-expenses. The debtor's open shares to the
+ * creditor are settled, oldest first, splitting a share that straddles the
+ * amount — the same split «کم و وجه» uses. A payment only reduces what the
+ * debtor owes the creditor; it never creates a reverse debt.
+ */
+describe('BalancesService settleTransfer', () => {
+  const T = (day: number) => new Date(2026, 0, day);
+
+  function share(
+    id: string,
+    amount: number,
+    opts: { userId?: string; at?: Date } = {},
+  ) {
+    return {
+      id,
+      amount,
+      isPaid: false,
+      userId: opts.userId ?? null,
+      contactId: null,
+      createdAt: opts.at ?? T(1),
+      user: opts.userId ? { id: opts.userId, firstName: 'U' } : null,
+      contact: null,
+    };
+  }
+
+  function expense(
+    id: string,
+    opts: { payerId: string; createdById?: string; shares: ReturnType<typeof share>[] },
+  ) {
+    return {
+      id,
+      createdById: opts.createdById ?? 'u1',
+      payerId: opts.payerId,
+      payer: { id: opts.payerId, firstName: 'P' },
+      payerContactId: null,
+      payerContact: null,
+      shares: opts.shares,
+    };
+  }
+
+  function makeTransferService(expenses: unknown[]) {
+    const txMock = {
+      expenseShare: {
+        update: jest.fn().mockResolvedValue({}),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const prismaMock = {
+      contact: { findUnique: jest.fn().mockResolvedValue(null) },
+      expense: { findMany: jest.fn().mockResolvedValue(expenses) },
+      $transaction: jest.fn(async (fn: (tx: unknown) => unknown) =>
+        fn(txMock),
+      ),
+    };
+    const service = new BalancesService(prismaMock as never);
+    return { service, prismaMock, txMock };
+  }
+
+  it('the 2-person case: splits the straddling share, net becomes zero', async () => {
+    // u1 paid 100,000, u2 paid 50,000; share 75,000 each; u2 owes u1 25,000.
+    const { service, txMock } = makeTransferService([
+      expense('e1', {
+        payerId: 'u1',
+        shares: [share('s1', 50000, { userId: 'u2', at: T(1) })],
+      }),
+      expense('e2', {
+        payerId: 'u2',
+        shares: [share('s2', 25000, { userId: 'u1', at: T(2) })],
+      }),
+    ]);
+    const res = await service.settleTransfer('u1', {
+      fromKey: 'user:u2',
+      toKey: 'user:u1',
+      amount: 25000,
+      expenseIds: ['e1', 'e2'],
+    });
+    expect(res).toEqual({
+      settledAmount: 25000,
+      remainingAmount: 0,
+      settledShares: 1,
+    });
+    // s1 (50,000) straddles 25,000 -> remainder 25,000 stays open, 25,000 settles
+    expect(txMock.expenseShare.update).toHaveBeenCalledWith({
+      where: { id: 's1' },
+      data: { amount: 25000 },
+    });
+    expect(txMock.expenseShare.create).toHaveBeenCalledWith({
+      data: {
+        amount: 25000,
+        isPaid: true,
+        expenseId: 'e1',
+        userId: 'u2',
+        contactId: null,
+      },
+    });
+    // s2 (u1 owes u2) is untouched: a payment never settles the reverse side
+    expect(txMock.expenseShare.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 's2' } }),
+    );
+  });
+
+  it('settles a whole share when the amount covers it', async () => {
+    const { service, txMock } = makeTransferService([
+      expense('e1', {
+        payerId: 'u1',
+        shares: [share('s1', 40000, { userId: 'u2' })],
+      }),
+    ]);
+    const res = await service.settleTransfer('u2', {
+      fromKey: 'user:u2',
+      toKey: 'user:u1',
+      amount: 40000,
+      expenseIds: ['e1'],
+    });
+    expect(res).toEqual({
+      settledAmount: 40000,
+      remainingAmount: 0,
+      settledShares: 1,
+    });
+    expect(txMock.expenseShare.update).toHaveBeenCalledWith({
+      where: { id: 's1' },
+      data: { isPaid: true },
+    });
+    expect(txMock.expenseShare.create).not.toHaveBeenCalled();
+  });
+
+  it('settles only what is owed when the amount exceeds the debt', async () => {
+    const { service } = makeTransferService([
+      expense('e1', {
+        payerId: 'u1',
+        shares: [share('s1', 10000, { userId: 'u2' })],
+      }),
+    ]);
+    const res = await service.settleTransfer('u1', {
+      fromKey: 'user:u2',
+      toKey: 'user:u1',
+      amount: 25000,
+      expenseIds: ['e1'],
+    });
+    expect(res).toEqual({
+      settledAmount: 10000,
+      remainingAmount: 15000,
+      settledShares: 1,
+    });
+  });
+
+  it('a stranger is forbidden', async () => {
+    const { service, prismaMock } = makeTransferService([
+      expense('e1', {
+        payerId: 'u1',
+        shares: [share('s1', 10000, { userId: 'u2' })],
+      }),
+    ]);
+    await expect(
+      service.settleTransfer('stranger', {
+        fromKey: 'user:u2',
+        toKey: 'user:u1',
+        amount: 10000,
+        expenseIds: ['e1'],
+      }),
+    ).rejects.toThrow('Only the creator, the debtor or the creditor');
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects fromKey === toKey', async () => {
+    const { service } = makeTransferService([]);
+    await expect(
+      service.settleTransfer('u1', {
+        fromKey: 'user:u1',
+        toKey: 'user:u1',
+        amount: 1000,
+        expenseIds: ['e1'],
+      }),
+    ).rejects.toThrow('fromKey and toKey must differ');
+  });
+});

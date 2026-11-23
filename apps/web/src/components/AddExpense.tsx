@@ -4,6 +4,7 @@ import { friendlyError } from '../api/client';
 import type {
   CreateExpenseInput,
   CreateGroupExpenseResult,
+  SettlePlan,
 } from '../api/types';
 import {
   formatNumberFa,
@@ -11,6 +12,8 @@ import {
   formatToman,
   parseAmountInput,
 } from '../lib/format';
+import { previewGroupPlan, groupPlan } from '../lib/groupExpenses';
+import { contactPartyKey, userPartyKey } from '../lib/parties';
 import { equalSplit, isValidCustomSplit, sumAmounts } from '../lib/split';
 import {
   AMBER,
@@ -136,7 +139,9 @@ export function AddExpense({
   const { api, me, contacts, recentContacts, upsertContact, refresh } =
     useAppState();
 
-  const [view, setView] = useState<'main' | 'custom' | 'result'>('main');
+  const [view, setView] = useState<'main' | 'custom' | 'preview' | 'result'>(
+    'main',
+  );
   const [mode, setMode] = useState<'expense' | 'debt' | 'multi'>('expense');
   const [debtDirection, setDebtDirection] = useState<'iOwe' | 'theyOwe'>(
     'iOwe',
@@ -154,6 +159,12 @@ export function AddExpense({
   // Multi-payer («چندپرداخت‌کننده»): how much each participant paid.
   const [paidRaw, setPaidRaw] = useState<Record<string, string>>({});
   const [result, setResult] = useState<CreateGroupExpenseResult | null>(null);
+  // Multi-payer preview: the plan computed BEFORE saving, so the user can
+  // verify the numbers and only then confirm. Nothing is stored yet.
+  const [preview, setPreview] = useState<SettlePlan | null>(null);
+  // Settling one transfer of the result plan (debtor pays creditor).
+  const [settlingKey, setSettlingKey] = useState<string | null>(null);
+  const [settleError, setSettleError] = useState<string | null>(null);
 
   // Inline contact creation
   const [newName, setNewName] = useState('');
@@ -183,6 +194,7 @@ export function AddExpense({
       setNewPhone('');
       setPaidRaw({});
       setResult(null);
+      setPreview(null);
     }
   }, [open, initialMode ]);
 
@@ -267,6 +279,62 @@ export function AddExpense({
     setView('custom');
   };
 
+  /**
+   * Settle one transfer of the result plan, then recompute the plan from
+   * the group's fresh sub-expenses so the remaining transfers update.
+   */
+  const settleResultTransfer = async (
+    fromKey: string,
+    toKey: string,
+    amount: number,
+  ) => {
+    if (!result || !me || settlingKey) return;
+    const key = `${fromKey}->${toKey}`;
+    setSettlingKey(key);
+    setSettleError(null);
+    try {
+      await api.settleTransfer({
+        fromKey,
+        toKey,
+        amount,
+        expenseIds: result.expenses.map((e) => e.id),
+      });
+      hapticSuccess();
+      const all = await api.listExpenses();
+      const fresh = all.filter((e) =>
+        result.expenses.some((re) => re.id === e.id),
+      );
+      setResult({ expenses: fresh, plan: groupPlan(fresh, me.firstName) });
+      await refresh().catch(() => {});
+    } catch (err) {
+      hapticError();
+      setSettleError(friendlyError(err));
+    } finally {
+      setSettlingKey(null);
+    }
+  };
+
+  /**
+   * Multi-payer preview: compute the plan from the form — exactly as the
+   * server will store it — and show it BEFORE anything is saved, so the
+   * user can check the numbers and only then confirm.
+   */
+  const showPreview = () => {
+    if (!me || mode !== 'multi' || !multiValid) return;
+    const participantKeys = selected.map((key) => {
+      if (key === ME) return userPartyKey(me.id);
+      const contact = contacts.find((c) => c.id === key);
+      return contact
+        ? contactPartyKey(contact)
+        : `contact:${key}`;
+    });
+    const payers = selected
+      .map((key, i) => ({ key: participantKeys[i], amount: paidAmountsInOrder[i] }))
+      .filter((p) => p.amount > 0);
+    setPreview(previewGroupPlan(participantKeys, payers));
+    setView('preview');
+  };
+
   const submit = async () => {
     if (!me || submitting || !formValid || !customValid) return;
     setSubmitting(true);
@@ -347,22 +415,37 @@ export function AddExpense({
           text:
             view === 'result'
               ? 'تمام'
-              : view === 'custom'
+              : view === 'preview'
                 ? submitting
                   ? 'در حال ثبت…'
-                  : 'تایید و ثبت نهایی'
-                : submitting
-                  ? 'در حال ثبت…'
-                  : mode === 'debt'
-                    ? 'ثبت بدهی'
-                    : mode === 'multi'
-                      ? 'ثبت و محاسبه 🧮'
-                      : 'ثبت و ارسال',
-          enabled: view === 'result' ? true : formValid && customValid,
+                  : 'تایید و ثبت ✅'
+                : view === 'custom'
+                  ? submitting
+                    ? 'در حال ثبت…'
+                    : 'تایید و ثبت نهایی'
+                  : submitting
+                    ? 'در حال ثبت…'
+                    : mode === 'debt'
+                      ? 'ثبت بدهی'
+                      : mode === 'multi'
+                        ? 'مشاهده تسویه 🧮'
+                        : 'ثبت و ارسال',
+          enabled:
+            view === 'result' || view === 'preview'
+              ? true
+              : formValid && customValid,
           loading: submitting,
           onClick: () => {
             if (view === 'result') {
               onClose();
+              return;
+            }
+            if (view === 'preview') {
+              void submit();
+              return;
+            }
+            if (mode === 'multi') {
+              showPreview();
               return;
             }
             void submit();
@@ -1115,13 +1198,16 @@ export function AddExpense({
               size="l"
               loading={submitting}
               disabled={!formValid || !customValid}
-              onClick={() => void submit()}
+              onClick={() => {
+                if (mode === 'multi') showPreview();
+                else void submit();
+              }}
               style={{ marginTop: 14 }}
             >
               {mode === 'debt'
                 ? 'ثبت بدهی 💸'
                 : mode === 'multi'
-                  ? 'ثبت و محاسبه 🧮'
+                  ? 'مشاهده تسویه 🧮'
                   : 'ثبت و ارسال ✈️'}
             </Button>
           )}
@@ -1320,39 +1406,41 @@ export function AddExpense({
             </Button>
           )}
         </div>
-      ) : (
-        /* ---------- Multi-payer result: the trip's settlement plan ---------- */
+      ) : view === 'preview' ? (
+        /* ---------- Multi-payer preview: verify the plan BEFORE saving ---------- */
         <div style={{ padding: '0 18px 30px' }}>
-          {result ? (
+          {preview ? (
             <>
               <div
                 style={{
-                  background: GREEN_TINT,
+                  background: 'rgba(232,161,58,0.10)',
                   borderRadius: 16,
                   padding: 14,
                   marginTop: 6,
                 }}
               >
                 <div style={{ fontWeight: 800, fontSize: 16 }}>
-                  ثبت شد ✅
+                  پیش‌نمایش تسویه 🔍
                 </div>
                 <div style={{ fontSize: 14, marginTop: 4 }}>
-                  {result.plan.transfers.length === 0 ? (
-                    <>همه صافن! 🎉 کسی به کسی بدهکار نیست.</>
-                  ) : (
-                    <>
-                      با{' '}
-                      <b>{formatNumberFa(result.plan.transfers.length)}</b>{' '}
-                      تراکنش همه صاف می‌شن — مجموع{' '}
-                      <b>{formatToman(result.plan.totalAmount)}</b>
-                    </>
-                  )}
+                  هنوز چیزی ثبت نشده. اگه عددها درستن، «تایید و ثبت» رو بزن؛
+                  اگه نه، برگرد و اصلاح کن.
+                </div>
+                <div style={{ fontSize: 14, marginTop: 6 }}>
+                  مبلغ کل <b>{formatToman(multiTotal)}</b> · سهم هر نفر{' '}
+                  <b>
+                    {formatToman(
+                      multiEqualPreview.length > 0
+                        ? Math.max(...multiEqualPreview)
+                        : 0,
+                    )}
+                  </b>
                 </div>
               </div>
 
-              {result.plan.transfers.length > 0 && (
+              {preview.transfers.length > 0 && (
                 <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
-                  {result.plan.transfers.map((t, i) => (
+                  {preview.transfers.map((t, i) => (
                     <div
                       key={`${t.fromKey}-${t.toKey}-${i}`}
                       style={{
@@ -1391,6 +1479,163 @@ export function AddExpense({
                   ))}
                 </div>
               )}
+              {preview.transfers.length === 0 && (
+                <div style={{ marginTop: 14, fontSize: 14 }}>
+                  همه صافن! 🎉 کسی به کسی بدهکار نیست.
+                </div>
+              )}
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                  خالص هر نفر
+                </div>
+                {preview.parties.map((p) => (
+                  <div
+                    key={p.key}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      padding: '6px 0',
+                      borderBottom: '1px solid rgba(120,140,170,0.10)',
+                      fontSize: 14,
+                    }}
+                  >
+                    <span>{nameOfKey(p.key)}</span>
+                    <span
+                      style={{
+                        fontWeight: 700,
+                        color: p.balance > 0 ? GREEN : p.balance < 0 ? RED : undefined,
+                      }}
+                    >
+                      {p.balance === 0
+                        ? 'صاف'
+                        : p.balance > 0
+                          ? `${formatToman(p.balance)} طلبکاره`
+                          : `${formatToman(-p.balance)} بدهکاره`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <ErrorNote>{error}</ErrorNote>
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 10,
+                  marginTop: 16,
+                  alignItems: 'center',
+                }}
+              >
+                <Button mode="plain" onClick={() => setView('main')}>
+                  بازگشت
+                </Button>
+              </div>
+              {showFallbackButton && (
+                <Button
+                  stretched
+                  size="l"
+                  loading={submitting}
+                  onClick={() => void submit()}
+                  style={{ marginTop: 8 }}
+                >
+                  تایید و ثبت ✅
+                </Button>
+              )}
+            </>
+          ) : (
+            <Text style={{ opacity: 0.6 }}>پیش‌نمایشی نیست.</Text>
+          )}
+        </div>
+      ) : (
+        /* ---------- Multi-payer result: the trip's settlement plan ---------- */
+        <div style={{ padding: '0 18px 30px' }}>
+          {result ? (
+            <>
+              <div
+                style={{
+                  background: GREEN_TINT,
+                  borderRadius: 16,
+                  padding: 14,
+                  marginTop: 6,
+                }}
+              >
+                <div style={{ fontWeight: 800, fontSize: 16 }}>
+                  ثبت شد ✅
+                </div>
+                <div style={{ fontSize: 14, marginTop: 4 }}>
+                  {result.plan.transfers.length === 0 ? (
+                    <>همه صافن! 🎉 کسی به کسی بدهکار نیست.</>
+                  ) : (
+                    <>
+                      با{' '}
+                      <b>{formatNumberFa(result.plan.transfers.length)}</b>{' '}
+                      تراکنش همه صاف می‌شن — مجموع{' '}
+                      <b>{formatToman(result.plan.totalAmount)}</b>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {result.plan.transfers.length > 0 && (
+                <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
+                  {result.plan.transfers.map((t, i) => {
+                    const tKey = `${t.fromKey}->${t.toKey}`;
+                    return (
+                      <div
+                        key={`${t.fromKey}-${t.toKey}-${i}`}
+                        style={{
+                          ...cardStyle,
+                          boxShadow: 'none',
+                          border: '1px solid rgba(120,140,170,0.16)',
+                          padding: '12px 14px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 12,
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 26,
+                            height: 26,
+                            borderRadius: '50%',
+                            background: BLUE,
+                            color: '#fff',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 13,
+                            fontWeight: 800,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {formatNumberFa(i + 1)}
+                        </span>
+                        <span style={{ flex: 1 }}>
+                          <b>{nameOfKey(t.fromKey)}</b> به{' '}
+                          <b>{nameOfKey(t.toKey)}</b> بده
+                        </span>
+                        <b>{formatToman(t.amount)}</b>
+                        <Button
+                          size="s"
+                          mode="outline"
+                          loading={settlingKey === tKey}
+                          disabled={settlingKey !== null}
+                          onClick={() =>
+                            void settleResultTransfer(
+                              t.fromKey,
+                              t.toKey,
+                              t.amount,
+                            )
+                          }
+                        >
+                          تسویه
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <ErrorNote>{settleError}</ErrorNote>
 
               <div style={{ marginTop: 16 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>

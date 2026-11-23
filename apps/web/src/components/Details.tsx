@@ -111,9 +111,39 @@ export function GroupExpenseDetailModal({
 }) {
   const { me, api, refresh } = useAppState();
   const [delError, setDelError] = useState<string | null>(null);
+  const [settlingKey, setSettlingKey] = useState<string | null>(null);
+  const [settleError, setSettleError] = useState<string | null>(null);
   const close = () => {
     setDelError(null);
+    setSettleError(null);
     onClose();
+  };
+  /** Settle one transfer of this group's plan; the plan recomputes from the
+   * refreshed expenses, so the remaining transfers update. */
+  const settleTransfer = async (
+    fromKey: string,
+    toKey: string,
+    amount: number,
+  ) => {
+    if (!expenses || settlingKey) return;
+    const key = `${fromKey}->${toKey}`;
+    setSettlingKey(key);
+    setSettleError(null);
+    try {
+      await api.settleTransfer({
+        fromKey,
+        toKey,
+        amount,
+        expenseIds: expenses.map((e) => e.id),
+      });
+      hapticSuccess();
+      await refresh().catch(() => {});
+    } catch (err) {
+      hapticError();
+      setSettleError(friendlyError(err));
+    } finally {
+      setSettlingKey(null);
+    }
   };
   const totals =
     expenses && me ? groupPartyTotals(expenses, me.firstName) : [];
@@ -187,23 +217,50 @@ export function GroupExpenseDetailModal({
                 </div>
               )}
               {plan &&
-                plan.transfers.map((t, i) => (
-                  <div
-                    key={`${t.fromKey}-${t.toKey}-${i}`}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      padding: '10px 20px',
-                      fontSize: 15,
-                    }}
-                  >
-                    <span>
-                      <b>{nameByKey.get(t.fromKey) ?? '؟'}</b> به{' '}
-                      <b>{nameByKey.get(t.toKey) ?? '؟'}</b> بده
-                    </span>
-                    <b>{formatToman(t.amount)}</b>
-                  </div>
-                ))}
+                plan.transfers.map((t, i) => {
+                  const tKey = `${t.fromKey}->${t.toKey}`;
+                  return (
+                    <div
+                      key={`${t.fromKey}-${t.toKey}-${i}`}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: '10px 20px',
+                        fontSize: 15,
+                      }}
+                    >
+                      <span style={{ flex: 1 }}>
+                        <b>{nameByKey.get(t.fromKey) ?? '؟'}</b> به{' '}
+                        <b>{nameByKey.get(t.toKey) ?? '؟'}</b> بده
+                      </span>
+                      <b>{formatToman(t.amount)}</b>
+                      <Button
+                        size="s"
+                        mode="outline"
+                        loading={settlingKey === tKey}
+                        disabled={settlingKey !== null}
+                        onClick={() =>
+                          void settleTransfer(t.fromKey, t.toKey, t.amount)
+                        }
+                      >
+                        تسویه
+                      </Button>
+                    </div>
+                  );
+                })}
+              {settleError && (
+                <div
+                  style={{
+                    padding: '0 20px 8px',
+                    color: RED,
+                    fontSize: 13,
+                  }}
+                >
+                  {settleError}
+                </div>
+              )}
               <div
                 style={{
                   padding: '4px 20px 12px',

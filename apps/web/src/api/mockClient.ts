@@ -19,6 +19,8 @@ import type {
   NetResult,
   PhoneLinkResult,
   SettlePlan,
+  SettleTransferInput,
+  SettleTransferResult,
   Share,
 } from './types';
 
@@ -496,6 +498,69 @@ export class MockApiClient implements ApiClient {
       transfers,
       parties,
       totalAmount: transfers.reduce((sum, t) => sum + t.amount, 0),
+    };
+  }
+
+  /** Mirrors the server's settle-transfer: the debtor's open shares to the creditor, within the given expenses, settle up to the amount (splitting a straddling share). */
+  async settleTransfer(
+    input: SettleTransferInput,
+  ): Promise<SettleTransferResult> {
+    if (input.fromKey === input.toKey) {
+      throw new ApiError(400, 'fromKey and toKey must differ');
+    }
+    const resolveKey = (key: string): string => {
+      if (!key.startsWith('contact:')) return key;
+      const contact = this.contacts.find(
+        (c) => c.id === key.slice('contact:'.length),
+      );
+      return contact?.linkedUserId
+        ? userPartyKey(contact.linkedUserId)
+        : key;
+    };
+    const fromKey = resolveKey(input.fromKey);
+    const toKey = resolveKey(input.toKey);
+    const owed: { expense: Expense; share: Share }[] = [];
+    for (const e of this.expenses) {
+      if (!input.expenseIds.includes(e.id)) continue;
+      const pKey = payerPartyKey(e);
+      if (!pKey || pKey !== toKey) continue;
+      for (const s of e.shares) {
+        if (s.isPaid) continue;
+        const dKey = sharePartyKey(s);
+        if (!dKey || dKey !== fromKey) continue;
+        owed.push({ expense: e, share: s });
+      }
+    }
+    owed.sort(
+      (a, b) =>
+        a.share.createdAt.localeCompare(b.share.createdAt) ||
+        a.share.id.localeCompare(b.share.id),
+    );
+    let budget = input.amount;
+    let settledShares = 0;
+    for (const { expense, share } of owed) {
+      if (budget === 0) break;
+      if (share.amount <= budget) {
+        share.isPaid = true;
+        budget -= share.amount;
+        settledShares += 1;
+      } else {
+        const piece: Share = {
+          ...share,
+          id: nextId('share'),
+          amount: budget,
+          isPaid: true,
+        };
+        share.amount -= budget;
+        expense.shares.push(piece);
+        budget = 0;
+        settledShares += 1;
+      }
+    }
+    return {
+      settledAmount: input.amount - budget,
+      remainingAmount: budget,
+      settledShares,
     };
   }
 

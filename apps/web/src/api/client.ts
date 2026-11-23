@@ -10,6 +10,8 @@ import type {
   NetResult,
   PhoneLinkResult,
   SettlePlan,
+  SettleTransferInput,
+  SettleTransferResult,
 } from './types';
 
 export class ApiError extends Error {
@@ -84,6 +86,7 @@ export interface ApiClient {
   getBalances(): Promise<Balance[]>;
   netWithCounterparty(partyKey: string): Promise<NetResult>;
   getSettlePlan(partyKeys: string[]): Promise<SettlePlan>;
+  settleTransfer(input: SettleTransferInput): Promise<SettleTransferResult>;
   settleShare(shareId: string): Promise<void>;
   unsettleShare(shareId: string): Promise<void>;
 }
@@ -183,6 +186,12 @@ export class HttpApiClient implements ApiClient {
     return this.request<SettlePlan>('/balances/settle-plan', {
       method: 'POST',
       body: JSON.stringify({ partyKeys }),
+    });
+  }
+  settleTransfer(input: SettleTransferInput) {
+    return this.request<SettleTransferResult>('/balances/settle-transfer', {
+      method: 'POST',
+      body: JSON.stringify(input),
     });
   }
   async settleShare(shareId: string) {

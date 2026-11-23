@@ -486,6 +486,190 @@ export class BalancesService {
   }
 
   /**
+   * Settle one transfer of a settlement plan: the debtor (fromKey) pays
+   * the creditor (toKey) `amount`, scoped to the given expenses (one group
+   * expense's sub-expenses). The debtor's open shares to the creditor in
+   * those expenses are marked settled, oldest first, splitting a share
+   * when only part of it is covered — the same split «کم و وجه» uses.
+   * A payment only ever reduces what the debtor owes the creditor; it
+   * never creates a reverse debt. If the debtor owes the creditor less
+   * than `amount` inside these expenses, only that much is settled and
+   * the remainder is reported (the plan recomputes from the open shares).
+   */
+  async settleTransfer(
+    userId: string,
+    dto: { fromKey: string; toKey: string; amount: number; expenseIds: string[] },
+  ): Promise<{
+    settledAmount: number;
+    remainingAmount: number;
+    settledShares: number;
+  }> {
+    if (dto.fromKey === dto.toKey) {
+      throw new BadRequestException('fromKey and toKey must differ');
+    }
+    // Resolve a linked contact key to its user, so a stale contact key
+    // still settles against the right party (same as getSettlePlan).
+    const resolveKey = async (key: string): Promise<string> => {
+      if (!key.startsWith('contact:')) return key;
+      const contact = await this.prisma.contact.findUnique({
+        where: { id: key.slice('contact:'.length) },
+        select: { linkedUserId: true },
+      });
+      return contact?.linkedUserId
+        ? `user:${contact.linkedUserId}`
+        : key;
+    };
+    const fromKey = await resolveKey(dto.fromKey);
+    const toKey = await resolveKey(dto.toKey);
+    const meKey = `user:${userId}`;
+
+    const expenses = await this.prisma.expense.findMany({
+      where: { id: { in: dto.expenseIds } },
+      include: {
+        payer: { select: USER_PUBLIC_SELECT },
+        payerContact: { select: CONTACT_PUBLIC_SELECT },
+        shares: {
+          where: { isPaid: false },
+          include: {
+            user: { select: USER_PUBLIC_SELECT },
+            contact: { select: CONTACT_PUBLIC_SELECT },
+          },
+        },
+      },
+    });
+    if (expenses.length !== dto.expenseIds.length) {
+      throw new NotFoundException('One or more expenses were not found');
+    }
+    // Only the group creator, the debtor or the creditor may settle a
+    // transfer of this group.
+    for (const expense of expenses) {
+      const allowed =
+        expense.createdById === userId ||
+        meKey === fromKey ||
+        meKey === toKey;
+      if (!allowed) {
+        throw new ForbiddenException(
+          'Only the creator, the debtor or the creditor can settle this transfer',
+        );
+      }
+    }
+
+    interface OpenShare {
+      id: string;
+      expenseId: string;
+      amount: number;
+      userId: string | null;
+      contactId: string | null;
+      createdAt: Date;
+    }
+    const owed: OpenShare[] = [];
+    for (const expense of expenses) {
+      const payer: Party | null = expense.payer
+        ? partyFromUser(expense.payer)
+        : expense.payerContact
+          ? partyFromContact(expense.payerContact)
+          : null;
+      if (!payer || payer.key !== toKey) continue;
+      for (const share of expense.shares) {
+        const debtor: Party | null = share.user
+          ? partyFromUser(share.user)
+          : share.contact
+            ? partyFromContact(share.contact)
+            : null;
+        if (!debtor || debtor.key !== fromKey) continue;
+        owed.push({
+          id: share.id,
+          expenseId: expense.id,
+          amount: share.amount,
+          userId: share.userId,
+          contactId: share.contactId,
+          createdAt: share.createdAt,
+        });
+      }
+    }
+    owed.sort(
+      (a, b) =>
+        a.createdAt.getTime() - b.createdAt.getTime() ||
+        a.id.localeCompare(b.id),
+    );
+
+    let budget = dto.amount;
+    let settledShares = 0;
+    await this.prisma.$transaction(async (tx) => {
+      for (const share of owed) {
+        if (budget === 0) break;
+        if (share.amount <= budget) {
+          await tx.expenseShare.update({
+            where: { id: share.id },
+            data: { isPaid: true },
+          });
+          budget -= share.amount;
+          settledShares += 1;
+        } else {
+          await tx.expenseShare.update({
+            where: { id: share.id },
+            data: { amount: share.amount - budget },
+          });
+          await tx.expenseShare.create({
+            data: {
+              amount: budget,
+              isPaid: true,
+              expenseId: share.expenseId,
+              userId: share.userId,
+              contactId: share.contactId,
+            },
+          });
+          budget = 0;
+          settledShares += 1;
+        }
+      }
+    });
+
+    const settledAmount = dto.amount - budget;
+    if (settledAmount > 0) {
+      void this.notifyTransferSettled(userId, fromKey, toKey, settledAmount);
+    }
+    return {
+      settledAmount,
+      remainingAmount: budget,
+      settledShares,
+    };
+  }
+
+  /** DM the debtor and creditor (except the actor) that a transfer was settled. */
+  private async notifyTransferSettled(
+    actorId: string,
+    fromKey: string,
+    toKey: string,
+    amount: number,
+  ) {
+    if (!this.notify) return;
+    const notify = this.notify;
+    try {
+      const actor = await notify.nameOf(actorId);
+      const amountFa = formatTomanFa(amount);
+      const userIdOf = (key: string) =>
+        key.startsWith('user:') ? key.slice('user:'.length) : null;
+      const debtorId = userIdOf(fromKey);
+      const creditorId = userIdOf(toKey);
+      if (creditorId && creditorId !== actorId) {
+        void notify.notifyUser(
+          creditorId,
+          `✅ ${actor} تسویه رو ثبت کرد: ${amountFa} تومان به تو پرداخت شد.`,
+        );
+      }
+      if (debtorId && debtorId !== actorId) {
+        void notify.notifyUser(
+          debtorId,
+          `✅ ${actor} پرداخت ${amountFa} تومان تو رو تسویه‌شده زد.`,
+        );
+      }
+    } catch {
+      // notifications are best-effort only
+    }
+  }
+
+  /**
    * «تسویه گروهی» — the minimum-transaction plan for a set of people.
    * Each party's net is computed across the open shares where BOTH the
    * payer and the debtor are in the selected set; shares with anyone

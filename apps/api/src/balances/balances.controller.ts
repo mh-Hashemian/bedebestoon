@@ -13,6 +13,7 @@ import { TelegramAuthGuard } from '../auth/telegram-auth.guard';
 import { BalancesService } from './balances.service';
 import { NetBalanceDto } from './dto/net-balance.dto';
 import { SettlePlanDto } from './dto/settle-plan.dto';
+import { SettleTransferDto } from './dto/settle-transfer.dto';
 
 @Controller()
 @UseGuards(TelegramAuthGuard)
@@ -42,6 +43,18 @@ export class BalancesController {
   @Post('balances/settle-plan')
   settlePlan(@CurrentUser() user: User, @Body() dto: SettlePlanDto) {
     return this.balances.getSettlePlan(user.id, dto.partyKeys);
+  }
+
+  /**
+   * Settle one transfer of a settlement plan (debtor pays creditor),
+   * scoped to the given expenses — one group expense's sub-expenses.
+   */
+  @Post('balances/settle-transfer')
+  settleTransfer(
+    @CurrentUser() user: User,
+    @Body() dto: SettleTransferDto,
+  ) {
+    return this.balances.settleTransfer(user.id, dto);
   }
 
   /** Mark a share as settled/paid. */
