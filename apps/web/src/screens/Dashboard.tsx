@@ -21,6 +21,13 @@ import {
   perPersonLabel,
 } from '../lib/parties';
 import {
+  groupExpenses,
+  groupMyNet,
+  groupPaidBy,
+  groupShareLabel,
+  groupTotal,
+} from '../lib/groupExpenses';
+import {
   cardStyle,
   categoryVisual,
   GREEN,
@@ -28,7 +35,11 @@ import {
   RED,
   RED_TINT,
 } from '../lib/theme';
-import { ExpenseDetailModal, PersonDetailModal } from '../components/Details';
+import {
+  ExpenseDetailModal,
+  GroupExpenseDetailModal,
+  PersonDetailModal,
+} from '../components/Details';
 import { PhonePrompt } from '../components/PhonePrompt';
 import { AvatarStack, InitialAvatar } from '../components/ui';
 import { useAppState } from '../state/AppState';
@@ -121,6 +132,99 @@ function TransactionCard({
   );
 }
 
+/**
+ * One card for a whole multi-payer («چندپرداخت‌کننده») group expense:
+ * the group total, who paid what, the per-person share and my net for
+ * the group — instead of one confusing card per payer with the same title.
+ */
+function GroupExpenseCard({
+  expenses,
+  onOpen,
+}: {
+  expenses: Expense[];
+  onOpen: () => void;
+}) {
+  const { me } = useAppState();
+  if (!me) return null;
+  const visual = categoryVisual(expenses[0].title);
+  const total = groupTotal(expenses);
+  const net = groupMyNet(expenses, me.id);
+  const paidBy = groupPaidBy(expenses, me.firstName);
+  const names = [
+    ...new Set(
+      expenses.flatMap((e) => participantNames(e, me.firstName)),
+    ),
+  ];
+
+  return (
+    <div
+      onClick={onOpen}
+      style={{
+        ...cardStyle,
+        margin: '0 16px 12px',
+        display: 'flex',
+        gap: 12,
+        cursor: 'pointer',
+        alignItems: 'flex-start',
+      }}
+    >
+      <span
+        style={{
+          width: 46,
+          height: 46,
+          borderRadius: 14,
+          background: visual.tint,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 22,
+          flexShrink: 0,
+        }}
+      >
+        {visual.emoji}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700 }}>{expenses[0].title}</div>
+        <div style={{ fontSize: 13, opacity: 0.65, marginTop: 2 }}>
+          👥 چندپرداخت‌کننده · مبلغ کل {formatToman(total)}
+        </div>
+        <div style={{ fontSize: 13, opacity: 0.65, marginTop: 2 }}>
+          {groupShareLabel(expenses, me.firstName)}
+        </div>
+        <div style={{ fontSize: 13, opacity: 0.65, marginTop: 2 }}>
+          {paidBy
+            .map((p) => `${p.name}: ${formatToman(p.amount)}`)
+            .join(' • ')}
+        </div>
+        <div style={{ marginTop: 6 }}>
+          <AvatarStack names={names} />
+        </div>
+      </div>
+      <div style={{ textAlign: 'left', flexShrink: 0 }}>
+        {net !== 0 ? (
+          <div
+            style={{
+              fontWeight: 800,
+              color: net > 0 ? GREEN : RED,
+              fontSize: 15,
+            }}
+          >
+            {formatSignedToman(net)}
+          </div>
+        ) : (
+          <div style={{ fontWeight: 700, color: GREEN, fontSize: 13 }}>
+            تسویه شده ✅
+          </div>
+        )}
+        <div style={{ fontSize: 12, opacity: 0.55, marginTop: 4 }}>
+          {formatDateTimeFa(expenses[0].createdAt)}
+        </div>
+        <div style={{ fontSize: 14, opacity: 0.35, marginTop: 2 }}>›</div>
+      </div>
+    </div>
+  );
+}
+
 export function Dashboard({
   onAddExpense,
 }: {
@@ -130,6 +234,9 @@ export function Dashboard({
     useAppState();
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
   const [selectedBalance, setSelectedBalance] = useState<Balance | null>(null);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[] | null>(
+    null,
+  );
   const [settleOpen, setSettleOpen] = useState(false);
 
   const totals = useMemo(() => {
@@ -146,9 +253,16 @@ export function Dashboard({
   const liveExpense = selectedExpense
     ? (expenses.find((e) => e.id === selectedExpense.id) ?? null)
     : null;
+  const liveGroup = selectedGroupIds
+    ? expenses.filter((e) => selectedGroupIds.includes(e.id))
+    : null;
+  const liveGroupOrNull =
+    liveGroup && liveGroup.length > 0 ? liveGroup : null;
   const liveBalance = selectedBalance
     ? (balances.find((b) => b.key === selectedBalance.key) ?? selectedBalance)
     : null;
+  // Multi-payer sub-expenses read as one transaction, not one card per payer.
+  const items = useMemo(() => groupExpenses(expenses), [expenses]);
 
   if (loading && !me) {
     return (
@@ -318,13 +432,23 @@ export function Dashboard({
           <Text>هنوز هزینه‌ای ثبت نشده است. اولین خرج گروهی را ثبت کن!</Text>
         </div>
       )}
-      {expenses.map((expense) => (
-        <TransactionCard
-          key={expense.id}
-          expense={expense}
-          onOpen={() => setSelectedExpense(expense)}
-        />
-      ))}
+      {items.map((item) =>
+        item.kind === 'group' ? (
+          <GroupExpenseCard
+            key={item.expenses.map((e) => e.id).join('+')}
+            expenses={item.expenses}
+            onOpen={() =>
+              setSelectedGroupIds(item.expenses.map((e) => e.id))
+            }
+          />
+        ) : (
+          <TransactionCard
+            key={item.expense.id}
+            expense={item.expense}
+            onOpen={() => setSelectedExpense(item.expense)}
+          />
+        ),
+      )}
 
       {/* Per-person balances */}
       <SectionTitle>حساب‌وکتاب با هر نفر</SectionTitle>
@@ -409,6 +533,10 @@ export function Dashboard({
       <ExpenseDetailModal
         expense={liveExpense}
         onClose={() => setSelectedExpense(null)}
+      />
+      <GroupExpenseDetailModal
+        expenses={liveGroupOrNull}
+        onClose={() => setSelectedGroupIds(null)}
       />
       <PersonDetailModal
         balance={liveBalance}

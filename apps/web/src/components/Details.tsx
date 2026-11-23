@@ -11,6 +11,13 @@ import {
   sharePartyKey,
   userPartyKey,
 } from '../lib/parties';
+import {
+  groupPaidBy,
+  groupPartyTotals,
+  groupPlan,
+  groupShareLabel,
+  groupTotal,
+} from '../lib/groupExpenses';
 import { DeleteButton, ShareRow } from './ui';
 import { useAppState } from '../state/AppState';
 
@@ -64,6 +71,160 @@ export function ExpenseDetailModal({
                 label="🗑 حذف این خرج"
                 onDelete={async () => {
                   await api.deleteExpense(expense.id);
+                  close();
+                  void refresh().catch(() => {});
+                }}
+                onError={setDelError}
+              />
+              {delError && (
+                <div
+                  style={{
+                    color: RED,
+                    fontSize: 13,
+                    marginTop: 8,
+                    textAlign: 'center',
+                  }}
+                >
+                  {delError}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Full view of one multi-payer («چندپرداخت‌کننده») group expense: the
+ * group total, who paid what, each person's net and the minimum-
+ * transaction settlement plan — recomputed from the stored sub-expenses.
+ * Deleting removes every sub-expense of the group.
+ */
+export function GroupExpenseDetailModal({
+  expenses,
+  onClose,
+}: {
+  expenses: Expense[] | null;
+  onClose: () => void;
+}) {
+  const { me, api, refresh } = useAppState();
+  const [delError, setDelError] = useState<string | null>(null);
+  const close = () => {
+    setDelError(null);
+    onClose();
+  };
+  const totals =
+    expenses && me ? groupPartyTotals(expenses, me.firstName) : [];
+  const plan = expenses && me ? groupPlan(expenses, me.firstName) : null;
+  const nameByKey = new Map(totals.map((t) => [t.key, t.name]));
+  const paidBy =
+    expenses && me ? groupPaidBy(expenses, me.firstName) : [];
+  return (
+    <Modal
+      open={!!expenses}
+      onOpenChange={(open) => {
+        if (!open) close();
+      }}
+      header={<Modal.Header>جزئیات خرج گروهی</Modal.Header>}
+    >
+      {expenses && me && (
+        <div style={{ paddingBottom: 24 }}>
+          <div style={{ padding: '4px 20px 0' }}>
+            <Text style={{ fontSize: 18, fontWeight: 700 }}>
+              {expenses[0].title}
+            </Text>
+            <div style={{ opacity: 0.7, marginTop: 4, fontSize: 14 }}>
+              👥 چندپرداخت‌کننده · {formatDateFa(expenses[0].createdAt)}
+            </div>
+            <div style={{ marginTop: 6, fontWeight: 600 }}>
+              مبلغ کل: {formatToman(groupTotal(expenses))}
+            </div>
+            <div style={{ marginTop: 2, fontWeight: 600 }}>
+              {groupShareLabel(expenses, me.firstName)}
+            </div>
+          </div>
+          <List>
+            <Section header="هر نفر چقدر پرداخت کرد">
+              {paidBy.map((p) => (
+                <div
+                  key={p.name}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    padding: '10px 20px',
+                    fontSize: 15,
+                  }}
+                >
+                  <span>{p.name}</span>
+                  <b>{formatToman(p.amount)}</b>
+                </div>
+              ))}
+            </Section>
+            <Section header="خالص هر نفر">
+              {totals.map((t) => (
+                <div
+                  key={t.key}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    padding: '10px 20px',
+                    fontSize: 15,
+                  }}
+                >
+                  <span>{t.name}</span>
+                  <b style={{ color: t.balance > 0 ? GREEN : t.balance < 0 ? RED : undefined }}>
+                    {formatSignedToman(t.balance)}
+                  </b>
+                </div>
+              ))}
+            </Section>
+            <Section header="تسویه این خرج">
+              {plan && plan.transfers.length === 0 && (
+                <div style={{ padding: '8px 20px 16px', opacity: 0.7 }}>
+                  تسویه شده ✅
+                </div>
+              )}
+              {plan &&
+                plan.transfers.map((t, i) => (
+                  <div
+                    key={`${t.fromKey}-${t.toKey}-${i}`}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      padding: '10px 20px',
+                      fontSize: 15,
+                    }}
+                  >
+                    <span>
+                      <b>{nameByKey.get(t.fromKey) ?? '؟'}</b> به{' '}
+                      <b>{nameByKey.get(t.toKey) ?? '؟'}</b> بده
+                    </span>
+                    <b>{formatToman(t.amount)}</b>
+                  </div>
+                ))}
+              <div
+                style={{
+                  padding: '4px 20px 12px',
+                  fontSize: 13,
+                  opacity: 0.6,
+                }}
+              >
+                این تسویه فقط برای همین خرجه؛ بدهی‌ها و طلب‌های قبلی با این
+                افراد جداگانه در تسویه حساب حساب می‌شن.
+              </div>
+            </Section>
+          </List>
+          {expenses[0].createdById === me.id && (
+            <div style={{ padding: '6px 16px 0' }}>
+              <DeleteButton
+                key={expenses.map((e) => e.id).join('+')}
+                label="🗑 حذف این خرج"
+                onDelete={async () => {
+                  for (const e of expenses) {
+                    await api.deleteExpense(e.id);
+                  }
                   close();
                   void refresh().catch(() => {});
                 }}
